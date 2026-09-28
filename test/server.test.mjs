@@ -467,7 +467,10 @@ test("analysis includes a suggested fix only when based on a recalled confirmed 
     ? { json: confirmedRecall }
     : { json: { text: "", structured_output: { similar_problem_found: false, matched_incident_id: "", likely_pattern: "", first_checks: ["a"], why: "", safety_note: "", avoid: "", conflict_note: "", team_learned: "" } } };
   const without = await post("/api/analyze", { incident: "Orders fail right after today's release and database connections are exhausted." });
-  assert.equal(without.json.suggestedFix ?? null, null);
+  // No verified team fix; at most a clearly labelled, placeholder-only documented example.
+  const fix = without.json.suggestedFix;
+  assert.ok(!fix || (fix.label === "GENERAL EXAMPLE" && fix.kind === "general-example" && !/=\s*\d/.test(fix.diff) && fix.source.type === "CURATED_KNOWLEDGE"));
+  assert.equal(withFix.json.suggestedFix.label, "VERIFIED TEAM FIX");
 });
 
 test("reflect naming a recalled incident in a wrapped format is still attributed", async () => {
@@ -477,4 +480,97 @@ test("reflect naming a recalled incident in a wrapped format is still attributed
   const res = await post("/api/analyze", { incident: INCIDENT });
   assert.equal(res.json.recommendation.matchedIncidentId, "INC-1042");
   assert.equal(res.json.state, "recommendation_ready");
+});
+
+// ---------- Knowledge-led behaviour (curated knowledge is never team memory) ----------
+
+test("empty team memory + known symptom -> KNOWLEDGE-LED with labelled hypotheses, nothing retained", async () => {
+  handler = (req) => req.url.endsWith("/memories/recall") ? { json: { results: [] } } : { status: 500, json: {} };
+  const res = await post("/api/analyze", { incident: "Checkout stopped working after today's release." });
+  assert.equal(res.status, 200);
+  assert.equal(res.json.mode.mode, "KNOWLEDGE-LED");
+  assert.equal(res.json.evidence.confidence.level, "INSUFFICIENT", "team-memory confidence is not inflated by documented knowledge");
+  assert.equal(res.json.knowledge.hits[0].id, "KB-CHECKOUT-001");
+  assert.ok(res.json.evidence.hypotheses.length >= 1 && res.json.evidence.hypotheses.length <= 3);
+  for (const h of res.json.evidence.hypotheses) {
+    assert.equal(h.source, "CURATED_KNOWLEDGE");
+    assert.notEqual(h.confidence, "HIGH", "knowledge alone never reaches HIGH");
+  }
+  assert.equal(res.json.evidence.nextBestCheck.source, "CURATED_KNOWLEDGE");
+  assert.match(res.json.evidence.nextBestCheck.text, /configuration/i);
+  assert.ok(!calls.some((c) => c.url.endsWith("/memories") && c.method === "POST"), "AI hypotheses are never stored");
+  assert.doesNotMatch(res.text, /INC-\d/, "no invented team incident");
+});
+
+test("no team memory and no knowledge match -> INSUFFICIENT with one next best check", async () => {
+  handler = (req) => req.url.endsWith("/memories/recall") ? { json: { results: [] } } : { status: 500, json: {} };
+  const res = await post("/api/analyze", { incident: "The office printer on the third floor keeps jamming." });
+  assert.equal(res.json.mode.mode, "INSUFFICIENT");
+  assert.equal(res.json.knowledge.hits.length, 0);
+  assert.equal(res.json.evidence.hypotheses.length, 0);
+  assert.equal(res.json.evidence.nextBestCheck.source, "GENERAL_KNOWLEDGE");
+  assert.equal(res.json.suggestedFix, null);
+});
+
+test("recalled confirmed team incident -> TEAM-LED, team hypotheses first and labelled TEAM_MEMORY", async () => {
+  const confirmedChunk = CHECKOUT_CHUNK.replace("Title:", "Status: Confirmed resolved incident\nTitle:");
+  const confirmedRecall = { ...recallWithCheckout, chunks: { ...recallWithCheckout.chunks, c1: { id: "c1", text: confirmedChunk, chunk_index: 0 } } };
+  handler = (req) => req.url.endsWith("/memories/recall")
+    ? { json: confirmedRecall }
+    : { json: { text: "", structured_output: { similar_problem_found: true, matched_incident_id: "INC-1042", likely_pattern: "p", first_checks: ["Compare connection settings"], why: "w", safety_note: "s", avoid: "", conflict_note: "", team_learned: "" } } };
+  const res = await post("/api/analyze", { incident: "Orders fail right after today's release and database connections are exhausted." });
+  assert.equal(res.json.mode.mode, "TEAM-LED");
+  assert.equal(res.json.evidence.hypotheses[0].source, "TEAM_MEMORY");
+  assert.equal(res.json.recommendation.source, "TEAM_MEMORY");
+  assert.equal(res.json.suggestedFix.label, "VERIFIED TEAM FIX");
+  const kb = res.json.evidence.hypotheses.filter((h) => h.source === "CURATED_KNOWLEDGE");
+  assert.ok(kb.every((h) => !/pool|connection/i.test(h.hypothesis)), "documented hypotheses do not duplicate the team one");
+});
+
+test("resolve promotes a documented hypothesis only after human confirmation and validates the id", async () => {
+  handler = (req, body) => ({ json: { success: true, bank_id: "test-bank", items_count: body.items.length, async: false } });
+  const bad = await post("/api/resolve", { incident: INCIDENT, worked: "Rolled back the config", confirmed: true, promotedFrom: "KB-NOT-REAL" });
+  assert.equal(bad.status, 400);
+  assert.equal(calls.length, 0);
+  const unconfirmed = await post("/api/resolve", { incident: INCIDENT, worked: "Rolled back the config", promotedFrom: "KB-CHECKOUT-001" });
+  assert.equal(unconfirmed.status, 400);
+  const ok = await post("/api/resolve", { incident: INCIDENT, worked: "Rolled back the config", cause: "Pool size reset by the release", causeConfirmed: true, confirmed: true, promotedFrom: "KB-CHECKOUT-001" });
+  assert.equal(ok.status, 200);
+  assert.equal(ok.json.promotedFrom, "KB-CHECKOUT-001");
+  const item = calls.find((c) => c.url.endsWith("/memories")).body.items[0];
+  assert.match(item.content, /Status: Human-confirmed resolution/);
+  assert.match(item.content, /Originally suggested by: curated knowledge KB-CHECKOUT-001 \(investigated and confirmed by a person\)/);
+  assert.equal(item.metadata.promoted_from, "KB-CHECKOUT-001");
+});
+
+test("/api/knowledge reports real counts and maturity per category", async () => {
+  const docs = {
+    "memoryops-INC-1": "Past solved problem INC-1 (checkout-api)\nTitle: Checkout down\nStatus: Confirmed resolved incident\nService: checkout-api | Category: Checkout / ordering | Severity: high | Environment: production\nConfirmed cause: pool reset\nWhat worked: restored pool",
+    "memoryops-INC-2": "Past solved problem INC-2 (checkout-api)\nTitle: Checkout slow\nStatus: Confirmed resolved incident\nService: checkout-api | Category: Checkout / ordering | Severity: high | Environment: production\nConfirmed cause: db\nWhat worked: x",
+    "memoryops-INC-3": "Past solved problem INC-3 (checkout-api)\nTitle: Orders fail\nStatus: Confirmed resolved incident\nService: checkout-api | Category: Checkout / ordering | Severity: high | Environment: production\nConfirmed cause: cert\nWhat worked: y",
+    "memoryops-MO-1": "Past solved problem MO-1 (Login)\nTitle: Users cannot sign in\nStatus: Human-confirmed resolution\nConfirmed cause: key rotation\nWhat worked: reload keys"
+  };
+  handler = Object.assign((req) => {
+    const u = new URL(req.url, "http://x");
+    if (u.pathname.endsWith("/documents")) {
+      const q = u.searchParams.get("q") || "";
+      const items = Object.keys(docs).filter((k) => k.startsWith(q)).map((id) => ({ id }));
+      return { json: { items, total: items.length, limit: 100, offset: 0 } };
+    }
+    const m = u.pathname.match(/\/documents\/(.+)$/);
+    if (m && docs[decodeURIComponent(m[1])]) return { json: { id: m[1], original_text: docs[decodeURIComponent(m[1])] } };
+    return { status: 404, json: {} };
+  }, { documents: true });
+  const res = await fetch(base + "/api/knowledge").then((r) => r.json());
+  assert.equal(res.curated.entries >= 150, true);
+  assert.equal(res.team.historical, 3);
+  assert.equal(res.team.learned, 1);
+  const row = (k) => res.maturity.find((r) => r.key === k);
+  assert.equal(row("checkout").level, "ESTABLISHED");
+  assert.equal(row("checkout").confirmedIncidents, 3);
+  assert.equal(row("authentication").level, "SOME");
+  assert.equal(row("certificates").level, "NO");
+  assert.ok(row("certificates").documentedEntries > 0, "documented knowledge is shown separately from team experience");
+  assert.ok(!JSON.stringify(res).includes("%"), "no fabricated percentages");
+  assert.ok(!JSON.stringify(res).includes(FAKE_KEY));
 });

@@ -135,6 +135,7 @@
             </div>
           </div>
           <div id="sessionObservations" class="session-obs"></div>
+          <p id="promotionNote" class="promotion" hidden></p>
           <div class="learn-foot">
             <label class="check-inline confirm-check"><input id="humanConfirmed" type="checkbox" /> <span><strong>I confirm this is what actually happened.</strong> AI suggestions are never saved as fact.</span></label>
             <button id="resolve" class="btn btn-accent" type="button">Save verified experience</button>
@@ -160,6 +161,16 @@
             <div><dt>Team patterns</dt><dd id="statPatterns">—</dd></div>
             <div><dt>Relevant to this problem</dt><dd id="statRelevant">—</dd></div>
           </dl>
+        </section>
+
+        <section class="rail-block" id="knowsBlock" aria-labelledby="knowsTitle">
+          <h2 class="rail-title" id="knowsTitle">What MemoryOps knows</h2>
+          <ul class="knows" id="knowsList"><li class="muted">Loading…</li></ul>
+          <details class="disclosure maturity">
+            <summary>Knowledge maturity by area</summary>
+            <ul class="maturity-list" id="maturityList"></ul>
+            <p class="rail-note">Established = 3+ confirmed team incidents. Some = 1–2. Counts are real; nothing is estimated.</p>
+          </details>
         </section>
 
         <section class="rail-block state" id="memoryStateBanner">

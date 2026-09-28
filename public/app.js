@@ -183,7 +183,31 @@ function renderCounts() {
   else badge.textContent = "";
 }
 
+// "What MemoryOps knows": real counts from /api/knowledge, never estimates.
+async function refreshKnowledge() {
+  try {
+    const k = await apiRequest("/api/knowledge");
+    const n = (v) => (Number.isFinite(v) ? v : "—");
+    const t = k.team;
+    const rows = [
+      ["TEAM_MEMORY", t ? `${n(t.confirmed)} confirmed team incidents` : "Team memory unavailable", t ? `${n(t.historical)} imported · ${n(t.learned)} learned here` : (k.teamError || "")],
+      ["TEAM_PATTERN", t ? `${n(t.patterns)} patterns · ${n(t.playbooks)} playbooks` : "—", "Only from 3+ confirmed incidents"],
+      ["CURATED_KNOWLEDGE", `${k.curated.entries} troubleshooting entries`, `${k.curated.technologies} technologies · synthetic, written for MemoryOps`],
+      ["PUBLIC_DOCUMENTATION", `${k.documentation.chunks} documentation excerpts`, k.documentation.publishers.length ? k.documentation.publishers.join(", ") : "Run npm run knowledge:fetch to add"],
+      ["GENERAL_KNOWLEDGE", "General reasoning fallback", "Lowest priority, always labelled"]
+    ];
+    $("knowsList").innerHTML = rows.map(([src, main, sub]) => `<li>${srcTag(src)}<span class="knows-main">${esc(main)}</span><span class="knows-sub">${esc(sub)}</span></li>`).join("");
+    const LEVEL = { ESTABLISHED: "Established team experience", SOME: "Some team experience", NO: "No team experience yet" };
+    $("maturityList").innerHTML = k.maturity.map((r) => `<li class="mat mat-${r.level.toLowerCase()}"><span class="mat-area">${esc(r.label)}</span>
+      <span class="mat-level">${LEVEL[r.level]}${r.confirmedIncidents ? ` · ${r.confirmedIncidents}` : ""}</span>
+      ${r.level === "NO" && r.documentedEntries ? `<span class="mat-doc">${r.documentedEntries} documented entries</span>` : ""}</li>`).join("");
+  } catch {
+    $("knowsList").innerHTML = `<li class="muted">Could not load knowledge counts.</li>`;
+  }
+}
+
 async function refreshStatus() {
+  refreshKnowledge();
   try {
     const s = await apiRequest("/api/status");
     state.connected = s.connected;
@@ -333,13 +357,20 @@ $("incident").addEventListener("keydown", (e) => { if ((e.ctrlKey || e.metaKey) 
 // ------------------------------------------------------------ Result rendering
 
 const LEVEL_TEXT = {
-  HIGH: "Several confirmed incidents agree with today's facts.",
-  MEDIUM: "Supported by confirmed history, with some uncertainty.",
-  LOW: "Weak or unconfirmed historical evidence.",
-  INSUFFICIENT: "No relevant historical evidence."
+  HIGH: "Several confirmed team incidents agree with today's facts.",
+  MEDIUM: "Supported by confirmed team history, with some uncertainty.",
+  LOW: "Weak or unconfirmed team evidence.",
+  INSUFFICIENT: "No relevant team experience yet."
 };
 
-const section = (key, title, body, extra = "") => `<section class="r-section r-${key}" ${extra}><h3 class="r-title">${esc(title)}</h3>${body}</section>`;
+// Provenance labels. Every piece of the answer says where it came from; sources are never blended.
+const SOURCE_LABEL = {
+  SESSION_EVIDENCE: "Session evidence", TEAM_MEMORY: "Team memory", TEAM_PATTERN: "Team pattern",
+  CURATED_KNOWLEDGE: "Curated knowledge", PUBLIC_DOCUMENTATION: "Public documentation", GENERAL_KNOWLEDGE: "General knowledge"
+};
+const srcTag = (type) => type ? `<span class="src src-${type.toLowerCase().replace(/_/g, "-")}">${SOURCE_LABEL[type] || esc(type)}</span>` : "";
+
+const section = (key, title, body, extra = "", source = "") => `<section class="r-section r-${key}" ${extra}><h3 class="r-title">${esc(title)}${srcTag(source)}</h3>${body}</section>`;
 const list = (items) => `<ul class="r-list">${items.map((t) => `<li>${esc(t)}</li>`).join("")}</ul>`;
 const numbered = (items) => `<ol class="r-checks">${items.map((t, i) => `<li><span class="n">${i + 1}</span><span>${esc(t)}</span></li>`).join("")}</ol>`;
 
@@ -350,13 +381,21 @@ function confidenceHtml(ev) {
     <span class="conf-label">Memory confidence</span>
     <span class="conf-chip">${c.level}</span>
     <span class="conf-text">${esc(LEVEL_TEXT[c.level])}</span>
-  </div>${c.statement ? `<p class="abstain">${esc(c.statement)}</p>` : ""}`;
+  </div>`;
+}
+
+function modeHtml(mode) {
+  if (!mode) return "";
+  return `<div class="mode mode-${mode.mode.toLowerCase()}" role="note">
+    <span class="mode-k">${esc(mode.mode === "INSUFFICIENT" ? "Insufficient evidence" : mode.mode.replace("-", " "))}</span>
+    <div><strong>${esc(mode.title)}</strong><p>${esc(mode.text)}</p></div>
+  </div>`;
 }
 
 function conflictHtml(ev) {
   if (!ev?.conflicts?.detected) return "";
   const rows = ev.conflicts.causes.map((c) => `<li><span>${esc(c.cause)}</span><span class="muted">${c.incidents.length} previous incident${c.incidents.length > 1 ? "s" : ""} · ${c.incidents.map(esc).join(", ")}</span></li>`).join("");
-  return section("conflict", "Multiple historical explanations", `<p class="r-text">Similar symptoms had different confirmed causes. Treat these as possibilities, not an answer.</p><ul class="conflict-list">${rows}</ul>`);
+  return section("conflict", "Conflicting evidence", `<p class="r-text">Similar symptoms had different confirmed causes. Treat these as possibilities, not an answer.</p><ul class="conflict-list">${rows}</ul>`, "", "TEAM_MEMORY");
 }
 
 function memoryCardHtml(m) {
@@ -376,6 +415,7 @@ function memoryCardHtml(m) {
     <p class="mc-title">${esc(f.title || f.happened || m.facts[0] || "")}</p>
     ${body}
     ${f.lesson ? `<p class="mc-lesson"><span>Lesson</span>${esc(f.lesson)}</p>` : ""}
+    ${f.promotedFrom ? `<p class="muted small">Originally suggested by ${esc(f.promotedFrom)}</p>` : ""}
     ${m.feedback?.length ? `<p class="mc-feedback">Team feedback: ${m.feedback.map((x) => esc(x.verdict)).join(", ")}</p>` : ""}
   </article>`;
 }
@@ -383,14 +423,18 @@ function memoryCardHtml(m) {
 function fixHtml(fix, level) {
   state.suggestedFix = fix || null;
   if (!fix) return "";
+  const general = fix.kind === "general-example";
   const lines = fix.diff.split("\n").map((l) => `<span class="dl ${l.startsWith("+") ? "add" : "del"}"><span class="sign">${esc(l[0])}</span>${esc(l.slice(2))}</span>`).join("");
-  return `<section class="r-section r-fix" id="fixBlock">
+  const based = general
+    ? `<div><dt>Based on</dt><dd>Curated knowledge ${esc(fix.source.id)}</dd></div><div><dt>Status</dt><dd>Not verified for your system</dd></div>`
+    : `<div><dt>Based on</dt><dd>${esc(fix.source.incidentId)}${fix.source.learned ? " · learned" : ""}</dd></div><div><dt>Confidence</dt><dd>${esc(level)}</dd></div>`;
+  return `<section class="r-section r-fix${general ? " is-general" : ""}" id="fixBlock">
+    <h3 class="r-title">Suggested fix${srcTag(general ? "CURATED_KNOWLEDGE" : "TEAM_MEMORY")}</h3>
     <div class="fix">
-      <div class="fix-bar"><span class="fix-kind">Suggested fix · config</span><button class="copy" type="button" id="copyFix" aria-label="Copy suggested change">Copy</button></div>
+      <div class="fix-bar"><span class="fix-kind">${esc(fix.label || (general ? "GENERAL EXAMPLE" : "VERIFIED TEAM FIX"))}</span><button class="copy" type="button" id="copyFix" aria-label="Copy suggested change">Copy</button></div>
       <pre class="fix-code"><code>${lines}</code></pre>
       <dl class="fix-meta">
-        <div><dt>Based on</dt><dd>${esc(fix.source.incidentId)}${fix.source.learned ? " · learned" : ""}</dd></div>
-        <div><dt>Confidence</dt><dd>${esc(level)}</dd></div>
+        ${based}
         <div class="wide"><dt>Verify first</dt><dd>${esc(fix.verify || "Compare today's value with the last known-good configuration.")}</dd></div>
       </dl>
       <p class="fix-note">${esc(fix.note)} Review before applying; MemoryOps never runs anything.</p>
@@ -399,23 +443,61 @@ function fixHtml(fix, level) {
   </section>`;
 }
 
+function hypothesisHtml(h) {
+  const origin = h.source === "CURATED_KNOWLEDGE"
+    ? `Documented in ${esc(h.knowledge_id)}${h.expected_if_true ? ` · expected if true: ${esc(h.expected_if_true)}` : ""}`
+    : `Past example: ${esc(h.example_cause || "")} · ${h.supporting_memories.map((m) => esc(m.id)).join(", ")}`;
+  return `<li class="hyp is-${h.status.replace(" ", "-")}">
+    <div class="hyp-head"><span>${esc(h.hypothesis)}</span>${srcTag(h.source || "TEAM_MEMORY")}<span class="tag">${h.confidence}</span><span class="tag tag-quiet">${esc(h.status)}</span></div>
+    <div class="muted">${origin}</div>
+    ${h.observations_for?.length ? `<div class="good">Supported by your observation: ${h.observations_for.map(esc).join("; ")}</div>` : ""}
+    ${h.evidence_against?.length ? `<div class="bad">Against: ${h.evidence_against.map(esc).join("; ")}</div>` : ""}
+  </li>`;
+}
+
 function diagnosisHtml() {
   const hyps = state.hypotheses || [];
   const next = state.nextBestCheck;
-  const hypList = hyps.length ? `<details class="disclosure"><summary>Current hypotheses (${hyps.length})</summary><ul class="hyps">${hyps.map((h) => `
-    <li class="hyp is-${h.status.replace(" ", "-")}">
-      <div class="hyp-head"><span>${esc(h.hypothesis)}</span><span class="tag">${h.confidence}</span><span class="tag tag-quiet">${esc(h.status)}</span></div>
-      <div class="muted">Past example: ${esc(h.example_cause || "")} · ${h.supporting_memories.map((m) => esc(m.id)).join(", ")}</div>
-      ${h.observations_for?.length ? `<div class="good">Supported by: ${h.observations_for.map(esc).join("; ")}</div>` : ""}
-      ${h.evidence_against?.length ? `<div class="bad">Against: ${h.evidence_against.map(esc).join("; ")}</div>` : ""}
-    </li>`).join("")}</ul></details>` : "";
+  const hypList = hyps.length ? `<details class="disclosure"${hyps.some((h) => h.source === "CURATED_KNOWLEDGE") ? " open" : ""}><summary>Hypotheses to test (${hyps.length})</summary><ul class="hyps">${hyps.map(hypothesisHtml).join("")}</ul></details>` : "";
   const body = next
-    ? `<p class="next">${esc(next.text)}</p>${next.expected_if_true ? `<p class="muted">Expected if true: ${esc(next.expected_if_true)}</p>` : ""}`
-    : `<p class="r-text">No remembered cause to test yet. Record what you check; it stays in this session.</p>`;
-  return `${body}${hypList}
+    ? `<p class="next">${esc(next.text)}</p><p class="muted small">From ${SOURCE_LABEL[next.source] ? SOURCE_LABEL[next.source].toLowerCase() : "analysis"}${next.expected_if_true ? ` · expected if true: ${esc(next.expected_if_true)}` : ""}</p>`
+    : `<p class="r-text">No hypothesis to test yet. Record what you check; it stays in this session.</p>`;
+  const obs = state.observations.length
+    ? `<ul class="obs-list">${state.observations.map((o) => `<li>${srcTag("SESSION_EVIDENCE")}<span>${esc(o)}</span></li>`).join("")}</ul>` : "";
+  return `${body}${hypList}${obs}
     <div class="obs"><input id="observationInput" type="text" spellcheck="false" placeholder="What did you observe? e.g. ${esc(state.observationHint || "Current pool is 5; previous version was 30")}" aria-label="Your observation" />
     <button class="btn btn-quiet btn-sm" type="button" id="addObservation">Record</button></div>
-    <p class="muted small">Observations are session-only and saved only if you confirm the outcome.</p>`;
+    <p class="muted small">Observations are session facts. They are saved only if you confirm the outcome.</p>`;
+}
+
+function citationsHtml(cites) {
+  if (!cites?.length) return "";
+  return `<p class="cites">References: ${cites.map((c) => `<a href="${esc(c.url)}" target="_blank" rel="noopener noreferrer">${esc(c.title)}</a> <span class="muted">(${esc(c.trust_level.toLowerCase())})</span>`).join(" · ")}</p>`;
+}
+
+function knowledgeHtml(k) {
+  if (!k || (!k.hits.length && !k.docs.length)) return "";
+  const [top, ...rest] = k.hits;
+  let body = "";
+  if (top) {
+    body += `<article class="kb-card">
+      <div class="kb-head"><span class="mono">${esc(top.id)}</span><span class="muted">${esc(top.technology)} · ${esc(top.category)}</span></div>
+      <p class="kb-title">${esc(top.title)}</p>
+      <p class="muted small">Matches documented symptoms: ${top.matched_terms.slice(0, 6).map(esc).join(", ")}</p>
+      <dl class="mc-rows">
+        <div class="mc-row"><dt>Rules it out</dt><dd>${esc(top.disconfirming_signals.slice(0, 2).join("; "))}</dd></div>
+        <div class="mc-row"><dt>Safe direction</dt><dd>${esc(top.safe_remediation_guidance.slice(0, 2).join("; "))}</dd></div>
+        ${top.warnings.length ? `<div class="mc-row"><dt>Warning</dt><dd class="bad">${esc(top.warnings[0])}</dd></div>` : ""}
+      </dl>
+      ${citationsHtml(top.citations)}
+    </article>`;
+  }
+  if (rest.length) body += `<details class="disclosure"><summary>Other documented possibilities (${rest.length})</summary><ul class="r-list">${rest.map((h) => `<li><span class="mono">${esc(h.id)}</span> ${esc(h.title)}</li>`).join("")}</ul></details>`;
+  for (const d of k.docs) {
+    body += `<blockquote class="doc-quote">${srcTag("PUBLIC_DOCUMENTATION")}<p>${esc(d.excerpt)}${d.excerpt.length >= 420 ? "…" : ""}</p>
+      <footer><a href="${esc(d.source_url)}" target="_blank" rel="noopener noreferrer">${esc(d.topic || d.title)}</a> · ${esc(d.publisher)} · ${esc(d.license)} · retrieved ${esc((d.retrieved_at || "").slice(0, 10))}${d.live ? " · live" : ""}</footer></blockquote>`;
+  }
+  return section("knowledge", "Documented knowledge", `<p class="muted small">Not your team's experience. Use it to decide what to check; confirm on your own system.</p>${body}`, "", top ? "CURATED_KNOWLEDGE" : "PUBLIC_DOCUMENTATION");
 }
 
 function teamHtml(team) {
@@ -423,7 +505,7 @@ function teamHtml(team) {
   let html = "";
   for (const p of team.patterns || []) {
     html += `<section class="r-section r-insight"><div class="insight">
-      <div class="insight-k">Team has learned</div>
+      <div class="insight-k">Team has learned ${srcTag("TEAM_PATTERN")}</div>
       <p class="insight-text">${esc(p.statement)}</p>
       <p class="muted">Based on ${p.supporting_incidents.length} confirmed incidents${p.counterexamples.length ? ` · Exception${p.counterexamples.length > 1 ? "s" : ""}: ${p.counterexamples.map((c) => `${esc(c.id)} (${esc(c.cause.toLowerCase())})`).join(", ")}` : ""}</p>
     </div></section>`;
@@ -443,42 +525,58 @@ function advancedHtml(data, matched) {
   const ev = data.evidence;
   const parts = [];
   if (others.length) parts.push(`<h4>Also recalled by Hindsight</h4><ul class="r-list">${others.map((m) => `<li><span class="mono">${esc(m.incidentId)}</span> ${esc(m.fields?.title || m.facts[0] || "")}</li>`).join("")}</ul>`);
-  if (ev?.confidence?.reasons?.length) parts.push(`<h4>How confidence was decided</h4>${list(ev.confidence.reasons)}`);
+  if (ev?.confidence?.reasons?.length) parts.push(`<h4>How memory confidence was decided</h4>${list(ev.confidence.reasons)}`);
+  if (ev?.confidence?.statement) parts.push(`<p class="muted">${esc(ev.confidence.statement)}</p>`);
   if (data.recommendation?.suppressed?.length) parts.push(`<h4>Removed suggestions</h4>${list(data.recommendation.suppressed.map((s) => `${s.check}: ${s.because}`))}`);
   if (matched) parts.push(`<h4>What Hindsight returned for ${esc(matched.incidentId)}</h4>${list(matched.facts)}<p class="mono muted small">document_id: ${esc(matched.documentId || "")}</p>`);
+  if (data.knowledge?.hits?.length) parts.push(`<h4>Knowledge retrieval</h4>${list(data.knowledge.hits.map((h) => `${h.id} · score ${h.score} · matched ${h.matched_terms.join(", ")}`))}`);
   return parts.length ? `<details class="disclosure r-section"><summary>Advanced details</summary><div class="advanced">${parts.join("")}</div></details>` : "";
 }
 
+// Hierarchy: confidence → mode → primary assessment → next best check → fix → team experience →
+// documented knowledge → why → conflicts → previously failed → pattern/playbook → verify.
 function renderResults(data, matched) {
   const rec = data.recommendation;
   const ev = data.evidence;
+  const k = data.knowledge || { hits: [], docs: [] };
   state.nextBestCheck = ev?.nextBestCheck || null;
   state.suggestedFix = null;
   const level = ev?.confidence?.level || "INSUFFICIENT";
-  let html = confidenceHtml(ev) + conflictHtml(ev);
+  let html = confidenceHtml(ev) + modeHtml(data.mode);
 
+  // Primary assessment
   if (!rec) {
-    html += section("thinks", "What MemoryOps thinks", `<p class="r-text">${esc(data.reflectError?.message || "The recommendation step failed.")} The recalled memory below is still real; try again.</p>`);
-    if (data.matches[0]) html += section("before", "What happened before", memoryCardHtml(data.matches[0]));
+    html += section("thinks", "Primary assessment", `<p class="r-text">${esc(data.reflectError?.message || "The recommendation step failed.")} The recalled memory below is still real; try again.</p>`);
   } else if (matched) {
     const thinks = rec.structured
       ? `${rec.pattern ? `<p class="lead">${esc(rec.pattern)}</p>` : ""}${rec.checks?.length ? `<h4>What to check first</h4>${numbered(rec.checks)}` : ""}`
       : `<p class="r-text pre">${esc(rec.text)}</p>`;
-    html += section("thinks", "What MemoryOps thinks", thinks);
-    html += section("before", "What happened before", memoryCardHtml(matched));
-    if (ev?.failedBefore?.length) html += section("failed", "What did not work before", list(ev.failedBefore.map((f) => f.text)));
+    html += section("thinks", "Primary assessment", thinks, "", "TEAM_MEMORY");
+  } else if (k.hits.length) {
+    const hyps = (ev?.hypotheses || []).filter((h) => h.source === "CURATED_KNOWLEDGE");
+    html += section("thinks", "Primary assessment", `<p class="lead">This looks like <strong>${esc(k.hits[0].title.toLowerCase())}</strong>. Possibilities to investigate:</p>
+      ${numbered(hyps.map((h) => h.hypothesis))}
+      <p class="muted small">${data.matches.length ? "Hindsight searched team memory, but nothing recalled resembles this closely enough to rely on." : "Your team has not recorded a similar incident yet."} Once a person confirms the cause and fix, MemoryOps learns it as team experience.</p>`, "", "CURATED_KNOWLEDGE");
   } else {
-    html += section("thinks", "No similar experience found", `<p class="r-text">${data.matches.length ? "Hindsight searched team memory, but nothing it recalled resembles this problem closely enough to rely on." : "This team has not solved a closely related problem yet."} MemoryOps will learn once the team confirms what solved this incident.</p>
-      ${rec.checks?.length ? `<h4>General first steps (not from memory)</h4>${numbered(rec.checks)}` : rec.text ? `<p class="r-text pre">${esc(rec.text)}</p>` : ""}`);
+    html += section("thinks", "Primary assessment", `<p class="r-text">${data.matches.length ? "Team memory was searched, but nothing recalled resembles this problem closely enough." : "Your team has not solved a related problem yet,"} and no documented knowledge matches closely. Start with the next best check below.</p>`);
   }
 
   if (ev) html += section("next", "Next best check", `<div id="diagnosisBox">${diagnosisHtml()}</div>`);
-  if (matched) html += fixHtml(data.suggestedFix, level);
+  html += fixHtml(data.suggestedFix, level);
+  if (matched) html += section("before", "Team experience", memoryCardHtml(matched), "", "TEAM_MEMORY");
+  else if (!rec && data.matches[0]) html += section("before", "Team experience", memoryCardHtml(data.matches[0]), "", "TEAM_MEMORY");
+  html += knowledgeHtml(k);
   if (matched && ev?.why?.reasons?.length) {
-    html += section("why", "Why MemoryOps suggests this", `${list(ev.why.reasons)}<p class="muted">Supporting: ${ev.why.supporting.map((id) => `<span class="mono">${esc(id)}</span>`).join(", ")}</p>`);
+    html += section("why", "Why", `${list(ev.why.reasons)}<p class="muted">Supporting: ${ev.why.supporting.map((id) => `<span class="mono">${esc(id)}</span>`).join(", ")}</p>`, "", "TEAM_MEMORY");
   }
+  html += conflictHtml(ev);
+  if (ev?.failedBefore?.length) html += section("failed", "Previously failed", list(ev.failedBefore.map((f) => f.text)), "", "TEAM_MEMORY");
+  else if (k.hits[0]?.common_failed_actions?.length) html += section("failed", "Commonly tried without success", list(k.hits[0].common_failed_actions.slice(0, 3)), "", "CURATED_KNOWLEDGE");
   html += teamHtml(data.team);
-  html += `<p class="verify"><span>Verify first</span>${esc(VERIFY_FIRST)}${rec?.safety ? ` ${esc(rec.safety)}` : ""}</p>`;
+  if (rec?.checks?.length && !matched) {
+    html += `<details class="disclosure r-section"><summary>General first steps ${srcTag("GENERAL_KNOWLEDGE")}</summary>${numbered(rec.checks)}</details>`;
+  }
+  html += `<p class="verify"><span>Verify before applying</span>${esc(VERIFY_FIRST)}${rec?.safety ? ` ${esc(rec.safety)}` : ""}</p>`;
   html += advancedHtml(data, matched);
   if (matched) {
     html += `<div class="feedback" id="feedbackRow"><span>Was this past incident useful?</span>
@@ -488,6 +586,19 @@ function renderResults(data, matched) {
   const container = $("recommendationContent");
   container.innerHTML = html;
   show($("results"));
+  updatePromotion();
+}
+
+// Knowledge promotion: if the person's observations support a documented hypothesis, saving a confirmed
+// outcome records where the idea came from. The AI hypothesis itself is never stored.
+function promotedHypothesis() {
+  return (state.hypotheses || []).find((h) => h.source === "CURATED_KNOWLEDGE" && h.status === "supported") || null;
+}
+function updatePromotion() {
+  const h = promotedHypothesis();
+  const el = $("promotionNote");
+  el.hidden = !h;
+  if (h) el.innerHTML = `${srcTag("CURATED_KNOWLEDGE")} Your observations support “${esc(h.hypothesis)}” from ${esc(h.knowledge_id)}. If you confirm it below, it is saved as <strong>your team's verified experience</strong>, noting it was originally suggested by documented knowledge.`;
 }
 
 function renderObservations() {
@@ -528,6 +639,7 @@ async function addObservation() {
   }
   $("diagnosisBox").innerHTML = diagnosisHtml();
   updateFixForHypotheses();
+  updatePromotion();
 }
 
 $("recommendationContent").addEventListener("keydown", (e) => { if (e.key === "Enter" && e.target.id === "observationInput") addObservation(); });
@@ -575,7 +687,8 @@ $("resolve").addEventListener("click", () => {
     return;
   }
   show(errorEl, false);
-  const payload = { incident, worked, confirmed: true, causeConfirmed: $("causeConfirmed").checked, observations: state.observations };
+  const promoted = promotedHypothesis();
+  const payload = { incident, worked, confirmed: true, causeConfirmed: $("causeConfirmed").checked, observations: state.observations, ...(promoted ? { promotedFrom: promoted.knowledge_id } : {}) };
   for (const f of SAVE_FIELDS) payload[f] = $(f).value.trim();
 
   return withBusy("resolve", $("resolve"), "Saving to Hindsight…", async () => {
@@ -592,9 +705,11 @@ $("resolve").addEventListener("click", () => {
       showToast("Experience learned.");
       await refreshStatus();
       setDemoState("saved", { id: res.id });
+      if (res.promotedFrom) logLearning(`Documented hypothesis ${esc(res.promotedFrom)} <strong>confirmed by a person</strong> and saved as team experience`);
       logLearning(`Saved verified experience <strong>${esc(res.id)}</strong>${Number.isFinite(state.documents) ? ` · ${countLabel(state.documents)} stored` : ""}`);
       state.observations = [];
       renderObservations();
+      $("promotionNote").hidden = true;
       for (const ch of res.consolidation?.changes || []) {
         if (ch.type === "TEAM_PATTERN" && ch.status !== "unchanged") {
           const p = res.consolidation.patterns.find((x) => x.id === ch.id);

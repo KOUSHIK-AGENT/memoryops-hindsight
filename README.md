@@ -2,7 +2,9 @@
 
 **AI that remembers how your team solved problems before.**
 
-Every time the team solves a problem, MemoryOps remembers what actually worked. When something similar happens later, it starts with that experience instead of starting from zero.
+An incident intelligence copilot that is **useful on day one and becomes team-specific over time**. MemoryOps combines a frontier reasoning model with a curated, cited technical knowledge corpus and Hindsight-based private team memory. It does **not** train or fine-tune a language model.
+
+Every time the team solves a problem, MemoryOps remembers what actually worked. When something similar happens later, it starts with that experience instead of starting from zero. Before the team has any history, it still helps, using documented operational knowledge that is clearly labelled as such.
 
 ## How MemoryOps learns
 
@@ -21,6 +23,68 @@ MemoryOps gets more useful because **verified experience accumulates in Hindsigh
 - **Provenance and conflicts are shown.** The UI names the recalled incident behind each recommendation and marks incidents "Learned from a previous resolved incident". Reflect reports conflicting memories in a `conflict_note` instead of silently picking one.
 - **Feedback is a hint, not a fact.** "Helpful / Not relevant" is saved as a separate feedback memory. It appears on the incident card and never counts as an incident, cause, or fix.
 - **The learning log is factual.** The Learning progress panel only reports what actually happened in this session, for example "0 relevant memories recalled → general troubleshooting", then "1 relevant resolved incident recalled (MO-…)". It shows no invented percentages.
+
+## Useful on day one: sources, priority and response modes
+
+Every part of an answer carries its source, and sources are never blended:
+
+| Source | What it is | Stored in team memory? |
+|---|---|---|
+| `SESSION EVIDENCE` | What the engineer observed during this session | Only inside a confirmed resolution |
+| `TEAM MEMORY` | Human-confirmed incidents recalled from Hindsight | Yes (it *is* team memory) |
+| `TEAM PATTERN` | Patterns / playbooks from 3+ confirmed team incidents | Yes |
+| `PUBLIC DOCUMENTATION` | Excerpts from official docs, with URL, publisher, licence, retrieval time | Never |
+| `CURATED KNOWLEDGE` | 150 structured troubleshooting entries (`knowledge/curated/`) | Never |
+| `GENERAL KNOWLEDGE` | Model reasoning without a cited source | Never |
+
+Priority: current observations > verified team experience > team patterns/playbooks > documentation > curated knowledge > general knowledge.
+
+The response mode is decided deterministically from the evidence (`lib/modes.mjs`):
+
+- **TEAM-LED**: a recalled, confirmed team incident supports the answer (memory confidence MEDIUM/HIGH). Team hypotheses come first; documented knowledge only fills remaining slots and never duplicates a team hypothesis.
+- **HYBRID**: some related team experience, but not enough to rely on. Team and documented evidence are shown separately.
+- **KNOWLEDGE-LED**: no similar team incident. *"MemoryOps has not seen a similar verified team incident yet. Based on documented operational knowledge, these are the possibilities to investigate."* Up to 3 hypotheses with evidence, a next check, and what you'd expect if each is true. Knowledge alone never reaches HIGH confidence, and it never changes the team-memory confidence.
+- **INSUFFICIENT EVIDENCE**: nothing matches closely enough. You get exactly one next best check.
+
+**Suggested fix labels.** `VERIFIED TEAM FIX` comes only from a recalled, human-confirmed incident whose own text states the setting and both values. `GENERAL EXAMPLE` comes from curated knowledge and uses placeholders only (`<last known-good value>`); values are never invented.
+
+**Knowledge → team memory promotion.** A documented hypothesis becomes team memory only when a person's observations support it and they confirm the outcome. The saved resolution is a normal human-confirmed incident with the line `Originally suggested by: curated knowledge KB-… (investigated and confirmed by a person)`. AI hypotheses are never stored automatically.
+
+**What MemoryOps knows** (`GET /api/knowledge`, right-hand panel): real counts of confirmed team incidents, patterns, playbooks, curated entries and documentation excerpts. Knowledge maturity per category is *Established* (3+ confirmed team incidents), *Some* (1–2) or *No team experience yet*, with the number of documented entries shown separately. There are no percentages.
+
+### Knowledge corpus and ingestion
+
+```
+knowledge/sources.json                     allow-list: publisher, licence, licence status, trust level, URLs
+knowledge/curated/troubleshooting-pack.json 150 entries, 41 technologies (SYNTHETIC, written for MemoryOps)
+knowledge/raw/                             fetched pages (git-ignored)
+knowledge/processed/docs.json              cleaned, chunked, de-duplicated excerpts with full metadata
+```
+
+```bash
+npm run knowledge:fetch      # only sources with licence_status "permissive"; honours robots.txt
+npm run knowledge:process    # strip boilerplate (nav, scripts, link-dense menus) → chunk by heading → redact → dedupe
+npm run knowledge:evaluate   # held-out retrieval evaluation, local and deterministic
+npm run knowledge:ingest -- --bank <separate-knowledge-bank>   # optional; refuses to write into the team bank
+```
+
+The pipeline is fetch → normalize → strip boilerplate → dedupe → chunk → metadata → index (BM25, per corpus) → retrieve. Each chunk carries `source_id, title, source_url, publisher, retrieved_at, document_type, technology, topic, version, license, trust_level, content, chunk_id`. Reference-only sources (for example MDN, Redis, NGINX) are cited but never fetched. The committed `docs.json` currently holds only the Node.js errors page, because the build sandbox's network blocked the other doc sites; run `knowledge:fetch` and `knowledge:process` locally to add the rest.
+
+`MEMORYOPS_LIVE_DOCS=1` turns on an optional live lookup (off by default). It fetches only the permissive pages cited by the top curated entry, honours robots.txt, caches for an hour, and shows excerpts with URL and retrieval time. Nothing it returns is stored.
+
+Knowledge evaluation (`npm run knowledge:evaluate`, 28 held-out queries written separately from the pack; a test checks that no query copies a 6-word sequence from it):
+
+| Metric | Result |
+|---|---|
+| Top-1 relevant | 23 / 24 |
+| Top-3 relevant | 24 / 24 |
+| Correct abstention on unrelated queries | 4 / 4 (0 false positives) |
+| Provenance labelled CURATED_KNOWLEDGE | 28 / 28 |
+| Top hit cites the expected authoritative source | 24 / 24 |
+| Produces hypotheses with a next check | 24 / 24 |
+| General examples use placeholders only | yes |
+
+These numbers are for the local curated corpus only. They say nothing about Hindsight retrieval on real incidents (see `memory:evaluate`).
 
 ## Why memory matters
 
@@ -46,8 +110,9 @@ Truthfulness rules the code enforces:
 
 ```
 Browser (public/: HTML/CSS/JS, no build step)
-   ↓  /api/status  /api/seed  /api/analyze  /api/resolve  /api/feedback
+   ↓  /api/status  /api/knowledge  /api/seed  /api/analyze  /api/diagnose  /api/resolve  /api/feedback
 MemoryOps Node API (server.mjs, no dependencies, API key stays server-side)
+   ├─ local knowledge corpus (lib/knowledge.mjs: curated pack + processed docs, BM25; never team memory)
    ↓  Bearer auth, timeouts, error mapping
 Hindsight Cloud
    ↓
@@ -68,7 +133,7 @@ On Windows PowerShell, run `Copy-Item .env.example .env` and then `notepad .env`
 ## Test it
 
 ```bash
-npm test          # 48 tests (server, dataset, ingestion, reasoning, fixes) against fake Hindsight; never touches your account
+npm test          # 67 tests (server, dataset, ingestion, reasoning, fixes, knowledge) against fake Hindsight; never touches your account
 npm run smoke     # the 7 learning-loop acceptance checks against your REAL bank (server must be running)
                   # (same as npm run memory:smoke)
 ```
@@ -179,6 +244,9 @@ The **Demo problems** buttons fill in both the problem and the outcome a person 
 3. Analyze a similar reworded problem. The newly learned `MO-…` resolution is recalled alongside the dataset.
 
 ## Limitations
+
+- The curated troubleshooting pack is synthetic: written for MemoryOps from general operational practice and linked to authoritative references. No domain expert has reviewed it. It is labelled `SYNTHETIC`, and knowledge-led answers are framed as possibilities to investigate.
+- Knowledge retrieval is lexical (BM25 with a small synonym map). Paraphrases with no shared vocabulary can be missed, and in that case MemoryOps abstains.
 
 - Confidence, relevance, hypotheses and patterns come from a deterministic English keyword lexicon (`lib/signals.mjs`). Unusual wording can be missed; when that happens, MemoryOps under-claims (it abstains) rather than over-claims.
 - Consolidation reads every incident document after each confirmed save (one `GET` per document). That is fine for hundreds of documents but not tuned for large banks.

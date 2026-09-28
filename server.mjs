@@ -5,9 +5,13 @@ import { fileURLToPath } from "node:url";
 import { DATASET_PATH, loadJson, validateDataset, incidentToRetainItem } from "./lib/dataset.mjs";
 import { parseFields, parseFeedback } from "./lib/memory-text.mjs";
 import { normalizeQuery, normalizedContext } from "./lib/signals.mjs";
-import { analyzeEvidence, applyObservations, suppressFailedChecks } from "./lib/reasoning.mjs";
+import { analyzeEvidence, applyObservations, suppressFailedChecks, nextBestCheck } from "./lib/reasoning.mjs";
 import { consolidate, patternToRetainItem, playbookToRetainItem, readPayload } from "./lib/patterns.mjs";
 import { suggestFix } from "./lib/fixes.mjs";
+import { searchKnowledge, knowledgeHypotheses, generalExampleFix, knowledgeStats, loadKnowledge } from "./lib/knowledge.mjs";
+import { decideMode, INSUFFICIENT_CHECK } from "./lib/modes.mjs";
+import { knowledgeMaturity } from "./lib/maturity.mjs";
+import { liveDocs } from "./lib/live-docs.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -26,6 +30,8 @@ const MAX_TEXT = 4000;
 // enable only if the held-out evaluation shows it helps (npm run memory:evaluate -- --normalize).
 const NORMALIZE_QUERY = process.env.MEMORYOPS_NORMALIZE_QUERY === "1";
 const AUTO_CONSOLIDATE = process.env.MEMORYOPS_AUTO_CONSOLIDATE !== "0";
+// Optional live documentation lookup for the top knowledge hit (off by default).
+const LIVE_DOCS = process.env.MEMORYOPS_LIVE_DOCS === "1";
 export const BANK_PATH = `/v1/default/banks/${encodeURIComponent(BANK_ID)}`;
 export { BANK_ID };
 
@@ -360,7 +366,8 @@ export async function analyzeIncident(incident) {
   if (matches.length === 0) {
     if (process.env.MEMORYOPS_QUIET !== "1") console.log("[analyze] recalled 0 memories from this bank");
     const evidence = analyzeEvidence({ incident, matches, patterns: team.patterns });
-    return { ok: true, state: "no_experience", matches: [], evidence, team, recommendation: { structured: true, memoryUsed: false, matchedIncidentId: null, general: true, ...GENERAL_TROUBLESHOOTING } };
+    const recommendation = { structured: true, memoryUsed: false, matchedIncidentId: null, general: true, source: "GENERAL_KNOWLEDGE", ...GENERAL_TROUBLESHOOTING };
+    return withKnowledge(incident, { ok: true, state: "no_experience", matches: [], evidence, team, recommendation, suggestedFix: null });
   }
   let recommendation;
   try {
@@ -368,8 +375,10 @@ export async function analyzeIncident(incident) {
   } catch (err) {
     // Recall worked; show what was recalled and report the reflect failure honestly.
     const evidence = analyzeEvidence({ incident, matches, patterns: team.patterns });
-    return { ok: true, state: "match_found", matches, evidence, team, recommendation: null, reflectError: { message: err.message || "Reflect failed.", code: err.code || "reflect_failed" } };
+    return withKnowledge(incident, { ok: true, state: "match_found", matches, evidence, team, recommendation: null, suggestedFix: null, reflectError: { message: err.message || "Reflect failed.", code: err.code || "reflect_failed" } });
   }
+  // Reflect's text is team-memory-based only when it used a recalled incident; otherwise it is general reasoning.
+  recommendation.source = recommendation.memoryUsed ? "TEAM_MEMORY" : "GENERAL_KNOWLEDGE";
   const evidence = analyzeEvidence({
     incident, matches, patterns: team.patterns,
     reflectMatchedId: recommendation.memoryUsed ? recommendation.matchedIncidentId : null,
@@ -389,7 +398,44 @@ export async function analyzeIncident(incident) {
     suggestedFix = suggestFix({ match, confidence: evidence.confidence.level, hypothesis });
   }
   logAnalysis(matches, recommendation, evidence);
-  return { ok: true, state: recommendation.memoryUsed ? "recommendation_ready" : "no_experience", matches, evidence, team, recommendation, suggestedFix };
+  return withKnowledge(incident, { ok: true, state: recommendation.memoryUsed ? "recommendation_ready" : "no_experience", matches, evidence, team, recommendation, suggestedFix });
+}
+
+// Documented knowledge is retrieved separately from team memory, labelled by source, and only fills the
+// gaps team experience leaves. It never changes team-memory confidence and is never retained.
+function searchCorpus(incident) {
+  try {
+    return searchKnowledge(incident);
+  } catch (err) {
+    return { hits: [], docs: [], error: `Knowledge corpus unavailable: ${err.message}` };
+  }
+}
+
+const overlaps = (a, b) => (a.keywords || []).filter((k) => (b.keywords || []).includes(k)).length >= 2;
+
+export async function withKnowledge(incident, result) {
+  const knowledge = searchCorpus(incident);
+  if (LIVE_DOCS && knowledge.hits.length) {
+    try {
+      const live = await liveDocs(incident, knowledge.hits[0], { sources: loadKnowledge().sources });
+      knowledge.docs = [...live, ...knowledge.docs].slice(0, 3);
+    } catch {
+      // Live lookup is best-effort; the local corpus answer stands.
+    }
+  }
+  const evidence = result.evidence;
+  const mode = decideMode({ evidence, recommendation: result.recommendation, knowledge });
+  // Team hypotheses first; documented hypotheses only fill remaining slots and never duplicate a team one.
+  const teamHyps = evidence.hypotheses || [];
+  const docHyps = knowledgeHypotheses(knowledge.hits).filter((k) => !teamHyps.some((t) => overlaps(t, k)));
+  evidence.hypotheses = [...teamHyps, ...docHyps].slice(0, 3);
+  evidence.nextBestCheck = nextBestCheck(evidence.hypotheses) || INSUFFICIENT_CHECK;
+  let suggestedFix = result.suggestedFix || null;
+  if (!suggestedFix && mode.mode !== "TEAM-LED") {
+    // No verified team fix: at most an illustrative, placeholder-only documented example.
+    suggestedFix = generalExampleFix(knowledge.hits.slice(0, 2).find((h) => h.example_fix)) || null;
+  }
+  return { ...result, mode, evidence, suggestedFix, knowledge: { hits: knowledge.hits, docs: knowledge.docs, error: knowledge.error || null, liveDocs: LIVE_DOCS } };
 }
 
 // Team patterns / playbook for today's situation (area + timing), read back from Hindsight.
@@ -413,7 +459,7 @@ async function teamKnowledge(facts) {
 
 // Read every confirmed incident document and upsert TEAM_PATTERN / PLAYBOOK memories.
 // Stable ids + unchanged-content skip => updates, never duplicates. Incidents are never modified or deleted.
-export async function consolidateMemory() {
+async function readIncidentDocs() {
   const ids = [];
   for (let offset = 0; ; offset += 100) {
     const page = await hindsightFetch(`${BANK_PATH}/documents?q=memoryops-&limit=100&offset=${offset}`, { timeoutMs: TIMEOUTS.status });
@@ -426,6 +472,11 @@ export async function consolidateMemory() {
     const batch = await Promise.all(ids.slice(i, i + 8).map((id) => hindsightFetch(`${BANK_PATH}/documents/${encodeURIComponent(id)}`, { timeoutMs: TIMEOUTS.status })));
     batch.forEach((d, k) => docs.push({ documentId: ids[i + k], text: d.original_text || "" }));
   }
+  return docs;
+}
+
+export async function consolidateMemory() {
+  const docs = await readIncidentDocs();
   const result = consolidate(docs);
   const items = [...result.patterns.map(patternToRetainItem), ...result.playbooks.map(playbookToRetainItem)];
   const changes = [];
@@ -467,6 +518,13 @@ export async function resolveIncident(body) {
   const area = optionalText(body, "area", 60).replace(/[()\n]/g, " ") || "Saved from MemoryOps";
   const causeConfirmed = body.causeConfirmed === true;
   // Session observations become memory only now, as part of a human-confirmed outcome.
+  // Knowledge promotion: a documented hypothesis a person investigated and confirmed. Only the source id is kept.
+  let promotedFrom = null;
+  if (body.promotedFrom !== undefined && body.promotedFrom !== null && body.promotedFrom !== "") {
+    const ids = new Set(loadKnowledge().pack.entries.map((e) => e.id));
+    if (typeof body.promotedFrom !== "string" || !ids.has(body.promotedFrom)) throw new ApiError(400, "validation", "promotedFrom must be a known curated knowledge id.");
+    promotedFrom = body.promotedFrom;
+  }
   const observations = Array.isArray(body.observations) ? body.observations.filter((o) => typeof o === "string" && o.trim()).slice(0, 10).map((o) => o.trim().slice(0, 300)) : [];
 
   const now = new Date();
@@ -485,18 +543,53 @@ export async function resolveIncident(body) {
       outcome && `Outcome: ${outcome}`,
       observations.length && `Observations during diagnosis: ${observations.join("; ")}`,
       lesson && `Lesson learned: ${lesson}`,
+      promotedFrom && `Originally suggested by: curated knowledge ${promotedFrom} (investigated and confirmed by a person)`,
       `Recorded at: ${now.toISOString()}`
     ].filter(Boolean).join("\n"),
     context: `Human-confirmed resolution ${id} saved by the team in MemoryOps`,
     timestamp: now.toISOString(),
     // A new document per resolution: earlier experience is never overwritten.
     document_id: `memoryops-${id}`,
-    metadata: { memoryops_id: id, source: "memoryops-resolution", verification: "human-confirmed", cause_status: cause ? (causeConfirmed ? "confirmed" : "suspected") : "unknown" }
+    metadata: { memoryops_id: id, source: "memoryops-resolution", verification: "human-confirmed", cause_status: cause ? (causeConfirmed ? "confirmed" : "suspected") : "unknown", ...(promotedFrom ? { promoted_from: promotedFrom } : {}) }
   }]);
-  return { ok: true, id, stored: result.items_count ?? 1, causeStatus: cause ? (causeConfirmed ? "confirmed" : "suspected") : "unknown" };
+  overviewCache = null;
+  return { ok: true, id, stored: result.items_count ?? 1, causeStatus: cause ? (causeConfirmed ? "confirmed" : "suspected") : "unknown", promotedFrom };
 }
 
 
+
+// "What MemoryOps knows": real counts per source + maturity per category. Cached briefly; reset on save/seed.
+let overviewCache = null;
+const OVERVIEW_TTL_MS = 60000;
+
+export async function knowledgeOverview() {
+  if (overviewCache && Date.now() - overviewCache.at < OVERVIEW_TTL_MS) return overviewCache.data;
+  const kb = loadKnowledge();
+  const ks = knowledgeStats(kb);
+  const data = {
+    ok: true,
+    curated: { entries: ks.curatedEntries, technologies: ks.technologies, trustLevel: kb.pack.trust_level || "SYNTHETIC" },
+    documentation: { chunks: ks.docChunks, publishers: [...new Set(kb.docs.map((d) => d.publisher))], liveLookup: LIVE_DOCS },
+    generalKnowledge: { available: true, note: "Model reasoning without a cited source. Lowest priority; always labelled." },
+    team: null,
+    maturity: knowledgeMaturity([], kb.pack),
+    teamError: null
+  };
+  if (!API_KEY) data.teamError = "HINDSIGHT_API_KEY is missing, so team memory cannot be counted.";
+  else {
+    try {
+      const [historical, learned, patterns, playbooks] = await Promise.all(["memoryops-INC-", "memoryops-MO-", "memoryops-pattern-", "memoryops-playbook-"].map(countDocuments));
+      const docs = await readIncidentDocs();
+      data.maturity = knowledgeMaturity(docs, kb.pack);
+      data.team = { historical, learned, confirmed: data.maturity.reduce((a, r) => a + r.confirmedIncidents, 0), patterns, playbooks };
+    } catch (err) {
+      data.teamError = err.code === "hindsight_not_found" ? null : err.message;
+      if (err.code === "hindsight_not_found") data.team = { historical: 0, learned: 0, confirmed: 0, patterns: 0, playbooks: 0 };
+    }
+  }
+  overviewCache = { at: Date.now(), data };
+  return data;
+}
 
 // ---------- Routes ----------
 
@@ -524,12 +617,17 @@ async function api(req, res, url) {
     return send(res, 200, status);
   }
 
+  if (req.method === "GET" && url.pathname === "/api/knowledge") {
+    return send(res, 200, await knowledgeOverview());
+  }
+
   if (req.method === "POST" && url.pathname === "/api/seed") {
     if (seedInFlight) throw new ApiError(409, "seed_in_progress", "Past incidents are already being loaded. Please wait.");
     seedInFlight = true;
     try {
       const samples = sampleIncidents();
       const result = await retain(samples.map(incidentToRetainItem));
+      overviewCache = null;
       return send(res, 200, { ok: true, seeded: samples.length, stored: result.items_count ?? samples.length, incidents: samples.map((i) => i.incident_id) });
     } finally {
       seedInFlight = false;
