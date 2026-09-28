@@ -4,9 +4,10 @@
 // Nothing here knows the expected answers except the final comparison.
 import fs from "node:fs";
 import { DATASET_PATH, EVAL_PATH, loadJson, validateEvalCase } from "../lib/dataset.mjs";
-import { parseArgs, loadMemoryApi, sleep } from "./cli.mjs";
+import { parseArgs, loadMemoryApi, sleep, stop, Stop } from "./cli.mjs";
 import { suppressFailedChecks } from "../lib/reasoning.mjs";
 
+try {
 const USAGE = "Usage: npm run memory:evaluate -- --bank <bank-id> [--k 3] [--recall-only] [--normalize] [--cases data/evaluation-cases.json] [--json out.json]";
 const args = parseArgs(process.argv.slice(2));
 const K = Math.max(1, Number(args.k) || 3);
@@ -21,7 +22,7 @@ const categoryOf = Object.fromEntries(dataset.map((r) => [r.incident_id, r.categ
 const invalid = cases.map((c) => [c.id, validateEvalCase(c, ids)]).filter(([, e]) => e.length);
 if (invalid.length) {
   for (const [id, e] of invalid) console.error(`${id}: ${e.join("; ")}`);
-  process.exit(1);
+  stop(1);
 }
 
 const { analyzeIncident, recallMatches, hindsightFetch, BANK_PATH, BANK_ID } = await loadMemoryApi(args.bank ?? process.env.MEMORYOPS_EVAL_BANK, USAGE);
@@ -31,7 +32,7 @@ try {
   stats = await hindsightFetch(`${BANK_PATH}/stats`, { timeoutMs: 15000 });
 } catch (err) {
   console.error(err.code === "hindsight_not_found" ? `Bank "${BANK_ID}" does not exist yet. Run npm run memory:seed -- --bank ${BANK_ID} first.` : `Cannot read bank: ${err.message}`);
-  process.exit(1);
+  stop(1);
 }
 
 const results = [];
@@ -142,4 +143,7 @@ console.log(`\nFailure classes: ${Object.keys(classCounts).length ? Object.entri
 if (typeof args.json === "string") {
   fs.writeFileSync(args.json, JSON.stringify({ bank: BANK_ID, k: K, recallOnly, ranAt: new Date().toISOString(), results }, null, 2));
   console.log(`\nRaw results written to ${args.json}`);
+}
+} catch (err) {
+  if (!(err instanceof Stop)) throw err;
 }

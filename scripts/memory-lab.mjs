@@ -2,8 +2,9 @@
 //   npm run memory:seed -- --bank memoryops-lab-v1   (first)
 //   npm run memory:lab  -- --bank memoryops-lab-v1
 // WRITES confirmed test resolutions and patterns to the bank, so never point it at your eval or demo bank.
-import { parseArgs, loadMemoryApi } from "./cli.mjs";
+import { parseArgs, loadMemoryApi, stop, Stop } from "./cli.mjs";
 
+try {
 const args = parseArgs(process.argv.slice(2));
 const api = await loadMemoryApi(args.bank, "Usage: npm run memory:lab -- --bank <lab-bank-id>   (a dedicated bank; it will be written to)");
 const { analyzeIncident, resolveIncident, consolidateMemory, hindsightFetch, BANK_PATH, BANK_ID } = api;
@@ -11,7 +12,7 @@ let failures = 0;
 const report = (ok, area, name, detail = "") => { if (!ok) failures++; console.log(`${ok ? "PASS" : "FAIL"}  [${area}] ${name}${detail ? `  (${detail})` : ""}`); };
 
 const listed = await hindsightFetch(`${BANK_PATH}/documents?q=memoryops-INC-&limit=1`, { timeoutMs: 15000 }).catch(() => ({ total: 0 }));
-if (!(listed.total >= 50)) { console.error(`Bank ${BANK_ID} has ${listed.total ?? 0} dataset incidents. Seed it first: npm run memory:seed -- --bank ${BANK_ID}`); process.exit(1); }
+if (!(listed.total >= 50)) { console.error(`Bank ${BANK_ID} has ${listed.total ?? 0} dataset incidents. Seed it first: npm run memory:seed -- --bank ${BANK_ID}`); stop(1); }
 console.log(`MEMORY QUALITY LAB on ${BANK_ID}\n`);
 
 // PATTERN LEARNING on the bootstrap corpus.
@@ -55,4 +56,7 @@ const a3 = await analyzeIncident("The office coffee machine shows a descaling wa
 report(!a3.recommendation?.memoryUsed && ["LOW", "INSUFFICIENT"].includes(a3.evidence.confidence.level), "ABSTENTION", "unrelated problem abstains", a3.evidence.confidence.level);
 
 console.log(failures ? `\n${failures} lab check(s) failed.` : "\nAll lab checks passed.");
-process.exit(failures ? 1 : 0);
+process.exitCode = failures ? 1 : 0;
+} catch (err) {
+  if (!(err instanceof Stop)) throw err;
+}

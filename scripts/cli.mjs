@@ -24,3 +24,12 @@ export async function loadMemoryApi(bank, usage) {
 }
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// End a script with an exit code WITHOUT process.exit(): on Windows, force-exiting while fetch
+// sockets are still closing can crash Node (UV_HANDLE_CLOSING assertion). Scripts wrap their body in
+// try { ... } catch (e) { if (!(e instanceof Stop)) throw e; } and let the event loop drain.
+export class Stop extends Error {}
+export function stop(code) {
+  process.exitCode = code;
+  throw new Stop();
+}

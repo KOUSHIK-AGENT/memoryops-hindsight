@@ -1,7 +1,9 @@
 // Real-Hindsight acceptance run for the self-learning loop.
 // 1) Set a NEW HINDSIGHT_BANK_ID in .env, 2) `npm start`, 3) in another terminal: `npm run smoke`.
 // Talks only to the MemoryOps server; the API key never leaves the server.
-const BASE = process.env.MEMORYOPS_URL || "http://localhost:3000";
+import { stop, Stop } from "./cli.mjs";
+
+try {const BASE = process.env.MEMORYOPS_URL || "http://localhost:3000";
 
 const ROUND1 = "Customers are unable to place orders after today's checkout update. Some checkout requests are failing, and the database appears overloaded. The problem started immediately after the latest update.";
 const ROUND2 = "Customers report that checkout becomes unavailable after today's release. Database requests are timing out and capacity appears exhausted.";
@@ -24,11 +26,11 @@ try {
   status = (await call("/api/status")).json;
 } catch {
   console.error(`Cannot reach MemoryOps at ${BASE}. Start it first with \`npm start\` in another terminal (or set MEMORYOPS_URL).`);
-  process.exit(1);
+  stop(1);
 }
 if (!status.connected) {
   console.error(`Hindsight not connected: ${status.error || "unknown error"}`);
-  process.exit(1);
+  stop(1);
 }
 console.log(`Bank: ${status.bankId} (${status.documents ?? "?"} documents)`);
 if (status.documents > 0) console.log("WARN  Bank is not empty. Use a brand-new HINDSIGHT_BANK_ID for a true 'before memory' run.");
@@ -77,4 +79,7 @@ const r3 = (await call("/api/analyze", { incident: UNRELATED })).json;
 report(!r3.recommendation?.memoryUsed, "6 unrelated problem does not reuse checkout experience", `state=${r3.state}`);
 
 console.log(failures ? `\n${failures} check(s) failed.` : "\nAll learning-loop checks passed against the configured Hindsight bank.");
-process.exit(failures ? 1 : 0);
+process.exitCode = failures ? 1 : 0;
+} catch (err) {
+  if (!(err instanceof Stop)) throw err;
+}
