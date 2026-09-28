@@ -1,0 +1,182 @@
+[
+  {
+    "id": "EVAL-01",
+    "type": "reworded",
+    "query": "Orders became unavailable right after today's release. Database requests are timing out and capacity looks exhausted.",
+    "expected_category": "database",
+    "expected_incident_ids": ["INC-1042"],
+    "should_match": true,
+    "notes": "Paraphrase of the pool-size regression. INC-1022 (too many connections after autoscaling) is a near miss."
+  },
+  {
+    "id": "EVAL-02",
+    "type": "reworded",
+    "query": "A number of shoppers were billed two times for a single purchase after our cache cluster switched over to a standby node.",
+    "expected_category": "payments",
+    "expected_incident_ids": ["INC-1057"],
+    "should_match": true,
+    "notes": "Duplicate charges after a cache failover."
+  },
+  {
+    "id": "EVAL-03",
+    "type": "reworded",
+    "query": "Since we swapped the token signing key, roughly one in four people fail to get into their account and logging in feels very sluggish.",
+    "expected_category": "authentication",
+    "expected_incident_ids": ["INC-1088"],
+    "should_match": true,
+    "notes": "Mixed signing keys across replicas."
+  },
+  {
+    "id": "EVAL-04",
+    "type": "reworded",
+    "query": "Payment notification callbacks from our card processor are all being refused as tampered ever since we upgraded the HTTP framework.",
+    "expected_category": "payments",
+    "expected_incident_ids": ["INC-1028"],
+    "should_match": true,
+    "notes": "Webhook signature verification broken by body parsing."
+  },
+  {
+    "id": "EVAL-05",
+    "type": "reworded",
+    "query": "Searching the catalog has become painfully slow since the afternoon rollout and the lookup cache never seems to get a hit anymore.",
+    "expected_category": "latency",
+    "expected_incident_ids": ["INC-1007"],
+    "should_match": true,
+    "notes": "Cache key format change."
+  },
+  {
+    "id": "EVAL-06",
+    "type": "reworded",
+    "query": "Our application hosts can no longer write anything because the drive is completely full, and almost all of it is log output.",
+    "expected_category": "storage",
+    "expected_incident_ids": ["INC-1009"],
+    "should_match": true,
+    "notes": "Verbose logging filled disk."
+  },
+  {
+    "id": "EVAL-07",
+    "type": "reworded",
+    "query": "Purchase receipts by email are arriving hours late; the mail sender process keeps dying on one particular item again and again.",
+    "expected_category": "queues",
+    "expected_incident_ids": ["INC-1036"],
+    "should_match": true,
+    "notes": "Poison message without dead-letter queue."
+  },
+  {
+    "id": "EVAL-08",
+    "type": "reworded",
+    "query": "After deploying, the backlog of background tasks keeps climbing because every processor only handles a single task at once.",
+    "expected_category": "queues",
+    "expected_incident_ids": ["INC-1044"],
+    "should_match": true,
+    "notes": "Concurrency setting silently defaulted. Structurally similar to INC-1042 (a config regression) but different subsystem."
+  },
+  {
+    "id": "EVAL-09",
+    "type": "reworded",
+    "query": "Phone apps can't reach our backend anymore since we moved to a different certificate issuer, while desktop browsers are unaffected.",
+    "expected_category": "certificates",
+    "expected_incident_ids": ["INC-1018"],
+    "should_match": true,
+    "notes": "Certificate pinning in mobile apps."
+  },
+  {
+    "id": "EVAL-10",
+    "type": "reworded",
+    "query": "Corporate SSO users are bounced with an error saying their identity assertion isn't valid yet, right after we rebuilt the authentication hosts.",
+    "expected_category": "authentication",
+    "expected_incident_ids": ["INC-1013"],
+    "should_match": true,
+    "notes": "Clock drift after image rebuild."
+  },
+  {
+    "id": "EVAL-11",
+    "type": "reworded",
+    "query": "When the platform added lots of extra app instances to cope with a traffic surge, the database started turning away new sessions.",
+    "expected_category": "database",
+    "expected_incident_ids": ["INC-1022"],
+    "should_match": true,
+    "notes": "Connection explosion from autoscaling. INC-1042 is a near miss."
+  },
+  {
+    "id": "EVAL-12",
+    "type": "two-plausible",
+    "query": "Checkout has been failing for customers since this morning's release; errors appear when they submit their order.",
+    "expected_category": "checkout",
+    "expected_incident_ids": ["INC-1042", "INC-1010", "INC-1001"],
+    "should_match": true,
+    "notes": "Deliberately ambiguous: three past checkout-after-release outages had different causes (connection pool, expired dependency certificate, payment provider outage). Any is a valid retrieval; the recommendation should not assert a single cause."
+  },
+  {
+    "id": "EVAL-13",
+    "type": "ambiguous",
+    "query": "People say the web API feels sluggish; response times roughly doubled, and bouncing the service only helps for a little while.",
+    "expected_category": "latency",
+    "expected_incident_ids": ["INC-1015", "INC-1031"],
+    "should_match": true,
+    "notes": "Temporary relief after restart suggests memory pressure (INC-1015); periodic spikes (INC-1031) is also plausible."
+  },
+  {
+    "id": "EVAL-14",
+    "type": "reworded",
+    "query": "Customers keep getting kicked out of their accounts at random and have to sign back in, and our shared in-memory store is maxed out.",
+    "expected_category": "authentication",
+    "expected_incident_ids": ["INC-1005"],
+    "should_match": true,
+    "notes": "Session eviction from shared Redis."
+  },
+  {
+    "id": "EVAL-15",
+    "type": "reworded",
+    "query": "Visitors from Southeast Asia see very slow page loads and pictures since we changed who hosts our domain name records.",
+    "expected_category": "latency",
+    "expected_incident_ids": ["INC-1039"],
+    "should_match": true,
+    "notes": "Missing geo-routing after DNS migration. INC-1048 (DNS provider outage) is a near miss."
+  },
+  {
+    "id": "EVAL-16",
+    "type": "reworded",
+    "query": "The overnight billing run never kicked off; the scheduler claims some other instance already owns the task, but nothing is running it.",
+    "expected_category": "queues",
+    "expected_incident_ids": ["INC-1047"],
+    "should_match": true,
+    "notes": "Stale distributed lock."
+  },
+  {
+    "id": "EVAL-17",
+    "type": "unrelated",
+    "query": "The office printer on the third floor keeps jamming and printing blank pages.",
+    "expected_category": null,
+    "expected_incident_ids": [],
+    "should_match": false,
+    "notes": "No relevant experience exists."
+  },
+  {
+    "id": "EVAL-18",
+    "type": "unrelated",
+    "query": "Our latest social media campaign received far fewer likes than the marketing team expected.",
+    "expected_category": null,
+    "expected_incident_ids": [],
+    "should_match": false,
+    "notes": "Business question, not an incident."
+  },
+  {
+    "id": "EVAL-19",
+    "type": "no-strong-match",
+    "query": "The data science team's recommendation model scores lower accuracy this month than last month.",
+    "expected_category": null,
+    "expected_incident_ids": [],
+    "should_match": false,
+    "notes": "Technical but no comparable incident in memory; must not be forced onto a latency or deployment incident."
+  },
+  {
+    "id": "EVAL-20",
+    "type": "no-strong-match",
+    "query": "A developer's laptop battery drains within two hours whenever the code editor is open.",
+    "expected_category": null,
+    "expected_incident_ids": [],
+    "should_match": false,
+    "notes": "Local workstation issue; no relevant production experience."
+  }
+]

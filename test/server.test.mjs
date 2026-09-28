@@ -79,14 +79,18 @@ const recallWithCheckout = {
 };
 
 test("status reports a real connection and document count from /stats", async () => {
+  const totals = { "memoryops-INC-": 50, "memoryops-MO-": 2, "memoryops-feedback-": 1 };
   handler = (req) => {
-    assert.equal(req.url, "/v1/default/banks/test-bank/stats");
-    return { json: { bank_id: "test-bank", total_nodes: 12, total_documents: 3, pending_operations: 0 } };
+    const u = new URL(req.url, "http://x");
+    if (u.pathname === "/v1/default/banks/test-bank/documents") return { json: { items: [], total: totals[u.searchParams.get("q")], limit: 1, offset: 0 } };
+    assert.equal(u.pathname, "/v1/default/banks/test-bank/stats");
+    return { json: { bank_id: "test-bank", total_nodes: 12, total_documents: 53, pending_operations: 0 } };
   };
   const res = await fetch(base + "/api/status").then((r) => r.json());
   assert.equal(res.connected, true);
-  assert.equal(res.documents, 3);
+  assert.equal(res.documents, 53);
   assert.equal(res.facts, 12);
+  assert.deepEqual(res.counts, { historical: 50, learned: 2, feedback: 1 }, "real per-kind counts from GET /documents?q=");
   assert.equal(calls[0].auth, `Bearer ${FAKE_KEY}`);
 });
 
