@@ -3,8 +3,9 @@
 // Duplicate-safe: each incident has a stable document_id (memoryops-INC-xxxx). Hindsight upserts on document_id,
 // and incidents whose stored original_text already matches are skipped entirely.
 import { DATASET_PATH, loadJson, validateDataset, incidentToRetainItem } from "../lib/dataset.mjs";
-import { parseArgs, loadMemoryApi, sleep } from "./cli.mjs";
+import { parseArgs, loadMemoryApi, sleep, stop, Stop } from "./cli.mjs";
 
+try {
 const USAGE = "Usage: npm run memory:seed -- --bank <bank-id> [--batch-size 5] [--only INC-1042,...] [--force] [--dry-run] [--file data/incidents.json]";
 const args = parseArgs(process.argv.slice(2));
 const RETRYABLE = new Set(["hindsight_rate_limited", "hindsight_unavailable", "hindsight_timeout", "hindsight_unreachable"]);
@@ -16,7 +17,7 @@ const { valid, errors } = validateDataset(records);
 if (errors.length) {
   console.error(`\n${errors.length} invalid record(s); nothing was sent to Hindsight:`);
   for (const e of errors) console.error(`  #${e.index} ${e.id ?? "(no id)"}: ${e.problems.join("; ")}`);
-  process.exit(1);
+  stop(1);
 }
 const only = typeof args.only === "string" ? new Set(args.only.split(",").map((s) => s.trim())) : null;
 const selected = only ? valid.filter((r) => only.has(r.incident_id)) : valid;
@@ -25,7 +26,7 @@ console.log(`${valid.length} valid. ${selected.length} selected.`);
 if (args["dry-run"]) {
   console.log("\n--dry-run: no network calls. Memory text for the first incident:\n");
   console.log(incidentToRetainItem(selected[0]).content);
-  process.exit(0);
+  stop(0);
 }
 
 const api = await loadMemoryApi(args.bank ?? process.env.MEMORYOPS_SEED_BANK, USAGE);
@@ -36,7 +37,7 @@ console.log(`Bank: ${BANK_ID}   batch size: ${batchSize}${args.force ? "   (--fo
 function fatalIfAuth(err) {
   if (err.code === "hindsight_auth" || err.code === "missing_api_key") {
     console.error(`\nStopping: ${err.message}`);
-    process.exit(1);
+    stop(1);
   }
 }
 
@@ -65,7 +66,7 @@ for (const r of selected) {
       const doc = await withRetry(() => hindsightFetch(`${BANK_PATH}/documents/${encodeURIComponent(item.document_id)}`, { timeoutMs: 15000 }));
       action = doc.original_text === item.content ? "unchanged" : "updated";
     } catch (err) {
-      if (err.code !== "hindsight_not_found") { console.error(`Could not check ${r.incident_id}: ${err.message}`); process.exit(1); }
+      if (err.code !== "hindsight_not_found") { console.error(`Could not check ${r.incident_id}: ${err.message}`); stop(1); }
     }
   } else {
     action = "replaced";
@@ -94,4 +95,7 @@ console.log(`\n${total} incidents processed`);
 console.log(`${retained} retained`);
 console.log(`${unchanged} unchanged (already in the bank)`);
 console.log(`${failed} failed`);
-process.exit(failed ? 1 : 0);
+process.exitCode = failed ? 1 : 0;
+} catch (err) {
+  if (!(err instanceof Stop)) throw err;
+}

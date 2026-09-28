@@ -1,7 +1,8 @@
 // Build/update TEAM_PATTERN and PLAYBOOK memories from confirmed incidents in a bank.
 //   npm run memory:consolidate -- --bank <bank-id>
-import { parseArgs, loadMemoryApi } from "./cli.mjs";
+import { parseArgs, loadMemoryApi, stop, Stop } from "./cli.mjs";
 
+try {
 const args = parseArgs(process.argv.slice(2));
 const { consolidateMemory, BANK_ID } = await loadMemoryApi(args.bank, "Usage: npm run memory:consolidate -- --bank <bank-id>");
 try {
@@ -13,5 +14,8 @@ try {
   console.log(`Changes: ${r.changes.map((c) => `${c.id}=${c.status}`).join(", ") || "none"}`);
 } catch (err) {
   console.error(`Consolidation failed: ${err.message}`);
-  process.exit(1);
+  stop(1);
+}
+} catch (err) {
+  if (!(err instanceof Stop)) throw err;
 }
