@@ -30,13 +30,13 @@
             <span id="dot" class="status-dot"></span>
             <div>
               <div class="connection-title" id="mode">Connecting…</div>
-              <div class="connection-meta" id="bank">Memory bank: Project</div>
+              <div class="connection-meta" id="bank">Checking memory bank…</div>
             </div>
           </div>
         </div>
-        <button id="resetDemo" class="btn-ghost-sm" title="Reset demo inputs and results" type="button">
+        <button id="resetDemo" class="btn-ghost-sm" title="Clears this screen only. Memories already stored in Hindsight are kept." type="button">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
-          Reset Demo
+          Reset screen
         </button>
       </div>
     </header>
@@ -45,22 +45,22 @@
     <nav class="demo-progress" aria-label="Incident response demo progress">
       <div class="progress-step active" id="step1" data-step="1">
         <span class="step-num">1</span>
-        <span class="step-label">Describe problem</span>
+        <span class="step-label">Today's problem</span>
       </div>
       <div class="step-divider" aria-hidden="true"></div>
       <div class="progress-step" id="step2" data-step="2">
         <span class="step-num">2</span>
-        <span class="step-label">Search memory</span>
+        <span class="step-label">Search team memory</span>
       </div>
       <div class="step-divider" aria-hidden="true"></div>
       <div class="progress-step" id="step3" data-step="3">
         <span class="step-num">3</span>
-        <span class="step-label">Review past solution</span>
+        <span class="step-label">What worked before → what to check</span>
       </div>
       <div class="step-divider" aria-hidden="true"></div>
       <div class="progress-step" id="step4" data-step="4">
         <span class="step-num">4</span>
-        <span class="step-label">Save what worked</span>
+        <span class="step-label">Save today's solution</span>
       </div>
     </nav>
 
@@ -99,7 +99,7 @@
             </button>
           </div>
           <p class="action-helper-text">
-            For the demo, this loads previously resolved problems into Hindsight.
+            Demo setup: stores 3 sample solved problems in Hindsight. Loading again replaces them — it never creates duplicates.
           </p>
         </article>
 
@@ -110,7 +110,7 @@
               <div class="panel-kicker">HINDSIGHT MEMORY STATE</div>
               <h2 class="panel-title">Team Knowledge Bank</h2>
             </div>
-            <div id="memoryBadge" class="badge badge-neutral">No past experience loaded</div>
+            <div id="memoryBadge" class="badge badge-neutral">Checking…</div>
           </div>
 
           <!-- Dynamic Memory State Notification Card -->
@@ -119,8 +119,8 @@
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
             </div>
             <div class="state-content">
-              <div class="state-headline" id="stateHeadline">No past experience yet</div>
-              <p class="state-description" id="stateDescription">MemoryOps has not learned any resolved incidents yet.</p>
+              <div class="state-headline" id="stateHeadline">Ready</div>
+              <p class="state-description" id="stateDescription">Checking what Hindsight remembers…</p>
             </div>
           </div>
 
@@ -159,11 +159,11 @@
           <div class="compare-grid">
             <div class="compare-col before-col" id="compareBefore">
               <div class="compare-tag">NO PAST EXPERIENCE</div>
-              <p class="compare-text">MemoryOps can only suggest general troubleshooting steps.</p>
+              <p class="compare-text" id="compareBeforeText">MemoryOps can only suggest general troubleshooting steps.</p>
             </div>
             <div class="compare-col after-col" id="compareAfter">
               <div class="compare-tag">PAST EXPERIENCE AVAILABLE</div>
-              <p class="compare-text">MemoryOps can use a similar problem your team solved before.</p>
+              <p class="compare-text" id="compareAfterText">MemoryOps can use a similar problem your team solved before.</p>
             </div>
           </div>
         </article>
@@ -171,11 +171,31 @@
 
       <!-- Section 2: Two-Column Results Layout -->
       <section class="grid-2-col" aria-label="Analysis and historical evidence results">
-        <!-- LEFT: What MemoryOps recommends -->
+        <!-- LEFT: Similar problem from the past -->
+        <article class="panel card-result" id="memoryPanel">
+          <div class="panel-header">
+            <div>
+              <div class="panel-kicker">STEP 2 • WHAT WORKED BEFORE</div>
+              <h2 class="panel-title">Similar problem from the past</h2>
+            </div>
+            <span id="recallBadge" class="badge badge-subtle">Not searched yet</span>
+          </div>
+
+          <!-- Recalled Memory Content Container -->
+          <div id="memoriesList" class="memories-container" aria-live="polite">
+            <!-- Thoughtful empty state -->
+            <div class="panel-empty-state" id="memoriesEmpty">
+              <svg class="empty-icon" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/></svg>
+              <h3>No search yet.</h3>
+              <p>Click <strong>Analyze problem</strong>. Anything Hindsight recalls from past solved problems appears here.</p>
+            </div>
+          </div>
+        </article>
+        <!-- RIGHT: What MemoryOps recommends -->
         <article class="panel card-result" id="recommendationPanel">
           <div class="panel-header">
             <div>
-              <div class="panel-kicker">STEP 3 • ACTIONABLE GUIDANCE</div>
+              <div class="panel-kicker">STEP 3 • WHAT TO CHECK TODAY</div>
               <h2 class="panel-title">What I would check first</h2>
             </div>
             <div id="recommendationContextBadge" class="badge badge-subtle">Awaiting analysis</div>
@@ -184,8 +204,8 @@
           <!-- Loading state placeholder -->
           <div id="analysisLoading" class="loading-state" style="display: none;" aria-live="polite">
             <div class="spinner"></div>
-            <div class="loading-text" id="loadingStage">Searching past experience…</div>
-            <div class="loading-sub">Querying Hindsight memory bank for matching incident signatures…</div>
+            <div class="loading-text" id="loadingStage">Searching your team's past solved problems…</div>
+            <div class="loading-sub">Hindsight recall finds similar solved problems, then reflect reasons over them. This can take several seconds.</div>
           </div>
 
           <!-- Initial empty prompt state -->
@@ -198,27 +218,6 @@
           <!-- Structured Recommendation Content Container -->
           <div id="recommendationContent" class="recommendation-body" style="display: none;" aria-live="polite">
             <!-- Dynamically populated structured cards -->
-          </div>
-        </article>
-
-        <!-- RIGHT: Similar problem from the past -->
-        <article class="panel card-result" id="memoryPanel">
-          <div class="panel-header">
-            <div>
-              <div class="panel-kicker">STEP 2 • HISTORICAL EVIDENCE</div>
-              <h2 class="panel-title">Similar problem from the past</h2>
-            </div>
-            <span id="recallBadge" class="badge badge-subtle">0 recalled</span>
-          </div>
-
-          <!-- Recalled Memory Content Container -->
-          <div id="memoriesList" class="memories-container" aria-live="polite">
-            <!-- Thoughtful empty state -->
-            <div class="panel-empty-state" id="memoriesEmpty">
-              <svg class="empty-icon" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/></svg>
-              <h3>No similar solved problem yet.</h3>
-              <p>When your team resolves incidents and saves what worked, MemoryOps can use that experience next time.</p>
-            </div>
           </div>
         </article>
       </section>
@@ -253,7 +252,7 @@
           </div>
           <div class="success-content">
             <div class="success-title">Saved to Hindsight ✓</div>
-            <div class="success-msg">This experience can now help with future incidents.</div>
+            <div class="success-msg">This experience can now help with future problems.</div>
             <div class="success-preview" id="savedResolutionPreview"></div>
           </div>
         </div>

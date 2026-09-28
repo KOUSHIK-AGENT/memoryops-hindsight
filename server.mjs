@@ -6,45 +6,79 @@ import { fileURLToPath } from "node:url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-loadEnv(path.join(__dirname, ".env"));
+if (process.env.MEMORYOPS_SKIP_DOTENV !== "1") loadEnv(path.join(__dirname, ".env"));
 
 const PORT = Number(process.env.PORT || 3000);
 const BASE_URL = (process.env.HINDSIGHT_BASE_URL || "https://api.hindsight.vectorize.io").replace(/\/$/, "");
 const API_KEY = process.env.HINDSIGHT_API_KEY || "";
 const BANK_ID = process.env.HINDSIGHT_BANK_ID || "memoryops-demo";
-const MOCK_MODE = process.env.MOCK_MODE === "1";
+// One override for every Hindsight call (used by tests); otherwise per-operation defaults.
+const TIMEOUT_OVERRIDE = Number(process.env.HINDSIGHT_TIMEOUT_MS) || 0;
+const TIMEOUTS = { status: 10000, retain: 120000, recall: 30000, reflect: 90000 };
+const MAX_TEXT = 4000;
+const BANK_PATH = `/v1/default/banks/${encodeURIComponent(BANK_ID)}`;
 
-const mockMemories = [];
-
+// Deterministic sample history. It is *stored* in Hindsight by /api/seed;
+// everything shown after analysis comes back from Hindsight recall/reflect.
 const seedIncidents = [
   {
     id: "INC-1042",
-    service: "checkout-api",
-    severity: "SEV-2",
-    symptoms: "After a deployment, checkout requests intermittently return 502. Logs show DB acquire timeout and the pool is exhausted.",
-    rootCause: "A deployment reduced the PostgreSQL connection pool from 30 to 5 while traffic stayed constant.",
-    resolution: "Restore pool size to 30, restart checkout-api pods, then verify DB connection saturation and 5xx rate.",
-    lesson: "When 502s and DB acquire timeouts appear together after checkout-api deployment, inspect connection-pool changes before broad rollback."
+    area: "Checkout",
+    date: "2026-03-14T10:20:00Z",
+    title: "Checkout stopped working shortly after a software update.",
+    happened: "Orders failed and database requests started timing out right after the update.",
+    cause: "The database connection limit had accidentally been changed from 30 to 5 in the update, so the database could not serve enough checkout requests at once.",
+    worked: "Restored the database connection limit to 30, restarted the checkout service, and verified that orders and database metrics returned to normal.",
+    lesson: "When checkout failures and database timeouts appear immediately after an update, compare the database connection settings with the previous working configuration.",
+    technical: "checkout-api returned HTTP 502; logs showed 'database acquire timeout'; PostgreSQL connection pool reduced from 30 to 5."
   },
   {
     id: "INC-1057",
-    service: "payments-worker",
-    severity: "SEV-2",
-    symptoms: "Payment jobs are retrying every 30 seconds and duplicate webhook deliveries are increasing.",
-    rootCause: "The idempotency key cache was unavailable after a Redis failover.",
-    resolution: "Restore Redis primary connectivity, drain retries gradually, and verify idempotency-key hit rate.",
-    lesson: "Duplicate webhook spikes plus retry storms can indicate idempotency cache loss."
+    area: "Payments",
+    date: "2026-04-02T16:05:00Z",
+    title: "Some customers were charged twice for the same payment.",
+    happened: "Payment jobs kept retrying and some payment confirmations were sent twice after a cache server restarted.",
+    cause: "The cache that remembers which payments were already processed became unavailable after a Redis failover.",
+    worked: "Restored the cache connection, drained the retry backlog slowly, and confirmed duplicate charges stopped.",
+    lesson: "A sudden rise in duplicate payment confirmations plus retry storms usually means the duplicate-protection cache was lost.",
+    technical: "payments-worker retry loop every 30s; duplicate webhook deliveries; idempotency-key cache miss after Redis failover."
   },
   {
     id: "INC-1088",
-    service: "identity-api",
-    severity: "SEV-1",
-    symptoms: "Login latency jumps above 8 seconds and token validation failures rise after a certificate rotation.",
-    rootCause: "One identity-api deployment still referenced the previous signing certificate.",
-    resolution: "Update the certificate reference, roll the stale deployment, and validate token signing/verification across all replicas.",
-    lesson: "After certificate rotation, mixed signing keys across replicas can produce intermittent auth failures."
+    area: "Login",
+    date: "2026-05-21T08:40:00Z",
+    title: "Users could not sign in after a security certificate was renewed.",
+    happened: "Sign-in became very slow (over 8 seconds) and many sign-in attempts failed.",
+    cause: "One copy of the login service was still using the old security certificate.",
+    worked: "Updated the certificate reference, restarted the outdated copy of the service, and verified sign-in on every server.",
+    lesson: "After renewing a certificate, confirm every copy of the service uses the new one; a mix causes intermittent sign-in failures.",
+    technical: "identity-api token validation failures after signing-certificate rotation; one deployment referenced the previous certificate."
   }
 ];
+
+const GENERAL_TROUBLESHOOTING = {
+  pattern: "No similar solved problem was found in team memory, so this is general troubleshooting.",
+  checks: [
+    "Find out exactly what changed recently (code, settings, or infrastructure) and whether the problem started right after that change.",
+    "Check the health of the systems the failing feature depends on, such as its database, for errors, slowness, or overload.",
+    "If customers are still affected, consider safely undoing the latest change while the team investigates."
+  ],
+  why: "MemoryOps has no past experience with a problem like this yet, so it cannot point to a specific cause.",
+  safety: "Confirm each finding on today's system before changing anything."
+};
+
+const REFLECT_SCHEMA = {
+  type: "object",
+  properties: {
+    similar_problem_found: { type: "boolean" },
+    matched_incident_id: { type: "string" },
+    likely_pattern: { type: "string" },
+    first_checks: { type: "array", items: { type: "string" } },
+    why: { type: "string" },
+    safety_note: { type: "string" }
+  },
+  required: ["similar_problem_found", "matched_incident_id", "likely_pattern", "first_checks", "why", "safety_note"]
+};
 
 function loadEnv(file) {
   if (!fs.existsSync(file)) return;
@@ -65,201 +99,338 @@ function loadEnv(file) {
 
 function send(res, status, payload, type = "application/json; charset=utf-8") {
   const body = type.startsWith("application/json") ? JSON.stringify(payload) : payload;
-  res.writeHead(status, {
-    "Content-Type": type,
-    "Cache-Control": "no-store"
-  });
+  res.writeHead(status, { "Content-Type": type, "Cache-Control": "no-store" });
   res.end(body);
+}
+
+class ApiError extends Error {
+  constructor(status, code, message, detail) {
+    super(message);
+    this.status = status;
+    this.code = code;
+    this.detail = detail;
+  }
 }
 
 async function readJson(req) {
   const chunks = [];
-  for await (const chunk of req) chunks.push(chunk);
-  const raw = Buffer.concat(chunks).toString("utf8");
-  return raw ? JSON.parse(raw) : {};
-}
-
-function authHeaders() {
-  return {
-    "Authorization": `Bearer ${API_KEY}`,
-    "Content-Type": "application/json"
-  };
-}
-
-async function hindsightFetch(urlPath, options = {}) {
-  if (!API_KEY) {
-    throw new Error("HINDSIGHT_API_KEY is missing. Copy .env.example to .env and add your key.");
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > 64 * 1024) throw new ApiError(413, "body_too_large", "Request body is too large.");
+    chunks.push(chunk);
   }
-  const response = await fetch(`${BASE_URL}${urlPath}`, {
-    ...options,
-    headers: { ...authHeaders(), ...(options.headers || {}) }
-  });
-  const text = await response.text();
-  let data = {};
-  try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
+  const raw = Buffer.concat(chunks).toString("utf8");
+  if (!raw.trim()) return {};
+  let body;
+  try { body = JSON.parse(raw); } catch {
+    throw new ApiError(400, "invalid_json", "Request body must be valid JSON.");
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw new ApiError(400, "invalid_json", "Request body must be a JSON object.");
+  }
+  return body;
+}
+
+function requiredText(body, field, label) {
+  const value = typeof body[field] === "string" ? body[field].trim() : "";
+  if (!value) throw new ApiError(400, "validation", `${label} is required.`);
+  if (value.length > MAX_TEXT) throw new ApiError(400, "validation", `${label} must be under ${MAX_TEXT} characters.`);
+  return value;
+}
+
+function redact(text) {
+  let s = String(text ?? "");
+  if (API_KEY) s = s.split(API_KEY).join("[redacted]");
+  return s.slice(0, 300);
+}
+
+async function hindsightFetch(urlPath, { method = "GET", body, timeoutMs } = {}) {
+  if (!API_KEY) {
+    throw new ApiError(503, "missing_api_key", "Hindsight is not configured: HINDSIGHT_API_KEY is missing. Copy .env.example to .env and add your key.");
+  }
+  let response;
+  try {
+    response = await fetch(`${BASE_URL}${urlPath}`, {
+      method,
+      headers: { "Authorization": `Bearer ${API_KEY}`, "Content-Type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: AbortSignal.timeout(TIMEOUT_OVERRIDE || timeoutMs || 30000)
+    });
+  } catch (err) {
+    if (err?.name === "TimeoutError" || err?.name === "AbortError") {
+      throw new ApiError(504, "hindsight_timeout", "Hindsight did not respond in time. Please try again.");
+    }
+    throw new ApiError(502, "hindsight_unreachable", "Could not reach Hindsight. Check your network connection and HINDSIGHT_BASE_URL.", redact(err?.cause?.code || err?.message));
+  }
+  const text = await response.text().catch(() => "");
+  let data = null;
+  try { data = text ? JSON.parse(text) : {}; } catch { data = null; }
+
   if (!response.ok) {
-    const message = data?.detail || data?.message || data?.raw || `${response.status} ${response.statusText}`;
-    const error = new Error(`Hindsight API: ${message}`);
-    error.status = response.status;
-    throw error;
+    const detail = redact(typeof data?.detail === "string" ? data.detail : data?.message || text || response.statusText);
+    const s = response.status;
+    if (s === 401 || s === 403) throw new ApiError(502, "hindsight_auth", `Hindsight rejected the API key (${s}). Check HINDSIGHT_API_KEY.`, detail);
+    if (s === 404) throw new ApiError(404, "hindsight_not_found", "Hindsight memory bank not found.", detail);
+    if (s === 429) throw new ApiError(429, "hindsight_rate_limited", "Hindsight rate limit reached. Wait a moment and try again.", detail);
+    if (s === 400 || s === 422) throw new ApiError(502, "hindsight_rejected", `Hindsight rejected the request (${s}).`, detail);
+    throw new ApiError(502, "hindsight_unavailable", `Hindsight is temporarily unavailable (${s}). Please try again.`, detail);
+  }
+  if (data === null || typeof data !== "object") {
+    throw new ApiError(502, "hindsight_bad_response", "Hindsight returned an unexpected response.", redact(text));
   }
   return data;
 }
 
-function incidentAsMemory(i) {
-  return [
-    `Incident ${i.id} (${i.severity}) affected ${i.service}.`,
-    `Symptoms: ${i.symptoms}`,
-    `Root cause: ${i.rootCause}`,
-    `Resolution that worked: ${i.resolution}`,
-    `Operational lesson: ${i.lesson}`
-  ].join("\n");
+// ---------- Hindsight operations ----------
+
+function incidentDocument(i) {
+  return {
+    content: [
+      `Past solved problem ${i.id} (${i.area})`,
+      `Title: ${i.title}`,
+      `What happened: ${i.happened}`,
+      `Confirmed cause: ${i.cause}`,
+      `What worked: ${i.worked}`,
+      `Lesson learned: ${i.lesson}`,
+      `Technical details: ${i.technical}`
+    ].join("\n"),
+    context: `Resolved incident report ${i.id} for the ${i.area.toLowerCase()} area`,
+    timestamp: i.date,
+    // Stable document_id => re-seeding replaces instead of duplicating.
+    document_id: `memoryops-${i.id}`,
+    metadata: { memoryops_id: i.id, source: "sample-history" }
+  };
 }
 
-async function retain(content, context) {
-  if (MOCK_MODE) {
-    mockMemories.push({ text: content, context });
-    return { mock: true };
-  }
-  return hindsightFetch(`/v1/default/banks/${encodeURIComponent(BANK_ID)}/memories`, {
+async function retain(items) {
+  const data = await hindsightFetch(`${BANK_PATH}/memories`, {
     method: "POST",
-    body: JSON.stringify({
-      items: [{
-        content,
-        context,
-        timestamp: new Date().toISOString()
-      }]
-    })
+    body: { items, async: false },
+    timeoutMs: TIMEOUTS.retain
   });
+  if (data.success !== true) {
+    throw new ApiError(502, "hindsight_bad_response", "Hindsight did not confirm the memory was saved.", redact(JSON.stringify(data)));
+  }
+  return data;
 }
 
 async function recall(query) {
-  if (MOCK_MODE) {
-    const tokens = query.toLowerCase().split(/\W+/).filter(x => x.length > 3);
-    const scored = mockMemories.map(m => ({
-      ...m,
-      score: tokens.reduce((n, t) => n + (m.text.toLowerCase().includes(t) ? 1 : 0), 0)
-    })).sort((a, b) => b.score - a.score).slice(0, 4);
-    return { results: scored };
-  }
   try {
-    return await hindsightFetch(`/v1/default/banks/${encodeURIComponent(BANK_ID)}/memories/recall`, {
+    const data = await hindsightFetch(`${BANK_PATH}/memories/recall`, {
       method: "POST",
-      body: JSON.stringify({ query })
+      body: { query, types: ["world", "experience"], include: { entities: null, chunks: { max_tokens: 4000 } } },
+      timeoutMs: TIMEOUTS.recall
     });
+    if (!Array.isArray(data.results)) {
+      throw new ApiError(502, "hindsight_bad_response", "Hindsight recall returned no results list.");
+    }
+    return data;
   } catch (err) {
-    if (err.status === 404) return { results: [] };
+    // A bank that does not exist yet simply has no memories.
+    if (err.code === "hindsight_not_found") return { results: [], chunks: {} };
     throw err;
   }
 }
 
 async function reflect(query) {
-  if (MOCK_MODE) {
-    const relevant = (await recall(query)).results?.[0];
-    if (!relevant) {
-      return { text: "No prior incident memory is available yet. Start with standard triage: identify the failing service, compare the latest deployment/configuration change, inspect dependency saturation, and capture the final resolution so the agent can learn." };
-    }
-    const isCheckout = /checkout|502|database|db|pool/i.test(query);
-    if (isCheckout) {
-      return { text: "Likely pattern: a checkout-api database connection-pool regression seen in a prior incident.\n\nFirst checks:\n1. Compare the current deployment's DB pool setting with the last known-good version.\n2. Inspect DB acquire timeout and pool saturation metrics.\n3. If the pool was reduced, restore the known-good value and roll the service.\n\nWhy: a previous incident with the same 502 + DB acquire-timeout pattern was resolved by restoring the pool from 5 to 30. Treat this as evidence, not certainty; verify current metrics before changing production." };
-    }
-    return { text: `A related past incident was found. Use it as evidence, verify the current deployment/configuration delta, and only then apply the prior fix.\n\nMemory:\n${relevant.text}` };
-  }
   try {
-    return await hindsightFetch(`/v1/default/banks/${encodeURIComponent(BANK_ID)}/reflect`, {
+    return await hindsightFetch(`${BANK_PATH}/reflect`, {
       method: "POST",
-      body: JSON.stringify({ query })
+      body: { query, response_schema: REFLECT_SCHEMA, include: { facts: {} } },
+      timeoutMs: TIMEOUTS.reflect
     });
   } catch (err) {
-    if (err.status === 404) {
-      return { text: "No memory bank exists yet. Seed or resolve at least one incident first." };
-    }
-    throw err;
+    // Older/limited deployments may not accept structured output: retry once as plain text.
+    if (err.code !== "hindsight_rejected") throw err;
+    return hindsightFetch(`${BANK_PATH}/reflect`, { method: "POST", body: { query }, timeoutMs: TIMEOUTS.reflect });
   }
 }
 
-function normalizeRecall(data) {
-  const items = data?.results || data?.items || [];
-  return items.slice(0, 5).map((m, idx) => ({
-    id: m.id || `memory-${idx + 1}`,
-    text: m.text || m.content || JSON.stringify(m),
-    type: m.type || "memory",
-    score: m.score ?? m.relevance ?? m.relevance_score ?? null,
-    context: m.context || null
-  }));
+// ---------- Response shaping ----------
+
+function parseFields(text) {
+  const pick = (label) => {
+    const m = text.match(new RegExp(`^${label}:\\s*(.+)$`, "im"));
+    return m ? m[1].trim() : null;
+  };
+  const head = text.match(/^Past solved problem\s+(\S+)\s*\(([^)]+)\)/im);
+  return {
+    incidentId: head ? head[1] : null,
+    area: head ? head[2] : null,
+    title: pick("Title"),
+    happened: pick("What happened"),
+    cause: pick("Confirmed cause"),
+    worked: pick("What worked"),
+    lesson: pick("Lesson learned"),
+    technical: pick("Technical details")
+  };
 }
 
-function normalizeReflect(data) {
-  return data?.text || data?.answer || data?.response || data?.content || JSON.stringify(data);
+// Group recalled facts by the Hindsight document they came from, in recall rank order.
+export function groupRecall(data) {
+  const chunks = data?.chunks && typeof data.chunks === "object" ? data.chunks : {};
+  const docs = new Map();
+  for (const [rank, r] of (data?.results || []).entries()) {
+    if (!r || typeof r.text !== "string") continue;
+    const key = r.document_id || `fact-${r.id || rank}`;
+    if (!docs.has(key)) docs.set(key, { documentId: r.document_id || null, rank: docs.size + 1, facts: [], chunkIds: new Set(), score: null, metadata: r.metadata || null });
+    const doc = docs.get(key);
+    doc.facts.push(r.text);
+    if (r.chunk_id) doc.chunkIds.add(r.chunk_id);
+    const s = r.scores?.reranker;
+    if (typeof s === "number" && (doc.score === null || s > doc.score)) doc.score = s;
+  }
+  return [...docs.values()].map((d) => {
+    const source = [...d.chunkIds].map((id) => chunks[id]).filter((c) => c && typeof c.text === "string")
+      .sort((a, b) => (a.chunk_index ?? 0) - (b.chunk_index ?? 0)).map((c) => c.text).join("\n");
+    const fields = source ? parseFields(source) : {};
+    const idFromDoc = d.documentId?.startsWith("memoryops-") ? d.documentId.slice("memoryops-".length) : null;
+    return {
+      incidentId: d.metadata?.memoryops_id || fields.incidentId || idFromDoc || d.documentId || "Memory",
+      documentId: d.documentId,
+      rank: d.rank,
+      score: d.score,
+      fields: source ? fields : null,
+      facts: d.facts.slice(0, 5)
+    };
+  });
 }
+
+function cleanText(s) {
+  return String(s || "").replace(/\*\*(.*?)\*\*/g, "$1").replace(/^#+\s*/gm, "").trim();
+}
+
+export function shapeRecommendation(reflectData, matches) {
+  let out = reflectData?.structured_output;
+  if (!out && typeof reflectData?.text === "string") {
+    try { out = JSON.parse(reflectData.text.replace(/^```(?:json)?\s*|\s*```$/g, "")); } catch { out = null; }
+  }
+  const ids = new Set(matches.map((m) => m.incidentId));
+  if (out && typeof out === "object" && Array.isArray(out.first_checks)) {
+    const claimed = String(out.matched_incident_id || "").trim();
+    // Only attribute the answer to memory Hindsight actually recalled.
+    const matchedId = out.similar_problem_found === true && ids.has(claimed) ? claimed : null;
+    return {
+      structured: true,
+      memoryUsed: Boolean(matchedId),
+      matchedIncidentId: matchedId,
+      pattern: cleanText(out.likely_pattern),
+      checks: out.first_checks.map(cleanText).filter(Boolean).slice(0, 5),
+      why: cleanText(out.why),
+      safety: cleanText(out.safety_note)
+    };
+  }
+  // Unstructured fallback: attribute to a recalled incident only if reflect names it.
+  const text = cleanText(reflectData?.text);
+  if (!text) throw new ApiError(502, "hindsight_bad_response", "Hindsight reflect returned an empty answer.");
+  const named = matches.find((m) => text.includes(m.incidentId));
+  return {
+    structured: false,
+    memoryUsed: Boolean(named),
+    matchedIncidentId: named ? named.incidentId : null,
+    text
+  };
+}
+
+function reflectPrompt(incident, matches) {
+  return [
+    "You are MemoryOps, an assistant that remembers how this team solved problems before.",
+    "Use ONLY the past solved problems stored in this memory bank as evidence. Never invent a past problem or a detail that is not in memory.",
+    "",
+    `TODAY'S PROBLEM: ${incident}`,
+    "",
+    `Past problems Hindsight recalled for this search: ${matches.map((m) => m.incidentId).join(", ") || "none"}.`,
+    "",
+    "Decide whether one of these past problems is genuinely similar to today's problem (similar symptoms and circumstances, not just shared words).",
+    "If yes: similar_problem_found=true and matched_incident_id=its exact id (for example INC-1042).",
+    "likely_pattern: one plain-English sentence a non-engineer understands.",
+    "first_checks: exactly three specific things to verify today, based on what caused and fixed the past problem. Phrase them as checks, not as blindly re-applying the old fix.",
+    "why: one or two sentences on why today's symptoms resemble that past problem.",
+    "safety_note: one sentence reminding the team to verify today's system before applying a previous fix.",
+    "If no past problem is genuinely similar: similar_problem_found=false, matched_incident_id=\"\", and give three general first checks.",
+    "Use plain language; put technical terms in parentheses only when helpful."
+  ].join("\n");
+}
+
+// ---------- Routes ----------
+
+let seedInFlight = false;
 
 async function api(req, res, url) {
   if (req.method === "GET" && url.pathname === "/api/status") {
-    let memoryCount = MOCK_MODE ? mockMemories.length : null;
-    if (!MOCK_MODE && API_KEY) {
-      try {
-        const stats = await hindsightFetch(`/v1/default/banks/${encodeURIComponent(BANK_ID)}/stats`);
-        memoryCount = stats?.memories ?? stats?.memory_count ?? stats?.count ?? null;
-      } catch (_) {}
+    const status = { ok: true, bankId: BANK_ID, hasApiKey: Boolean(API_KEY), connected: false, bankExists: false, documents: null, facts: null, pendingOperations: 0 };
+    if (!API_KEY) return send(res, 200, { ...status, error: "HINDSIGHT_API_KEY is missing." });
+    try {
+      const stats = await hindsightFetch(`${BANK_PATH}/stats`, { timeoutMs: TIMEOUTS.status });
+      Object.assign(status, {
+        connected: true,
+        bankExists: true,
+        documents: Number.isFinite(stats.total_documents) ? stats.total_documents : null,
+        facts: Number.isFinite(stats.total_nodes) ? stats.total_nodes : null,
+        pendingOperations: Number.isFinite(stats.pending_operations) ? stats.pending_operations : 0
+      });
+    } catch (err) {
+      if (err.code === "hindsight_not_found") Object.assign(status, { connected: true, documents: 0, facts: 0 });
+      else Object.assign(status, { error: err.message, code: err.code });
     }
-    return send(res, 200, {
-      ok: true,
-      mode: MOCK_MODE ? "mock" : "hindsight",
-      bankId: BANK_ID,
-      hasApiKey: Boolean(API_KEY),
-      memoryCount
-    });
+    return send(res, 200, status);
   }
 
   if (req.method === "POST" && url.pathname === "/api/seed") {
-    for (const i of seedIncidents) {
-      await retain(incidentAsMemory(i), `Resolved incident ${i.id} for ${i.service}`);
+    if (seedInFlight) throw new ApiError(409, "seed_in_progress", "Past incidents are already being loaded. Please wait.");
+    seedInFlight = true;
+    try {
+      const result = await retain(seedIncidents.map(incidentDocument));
+      return send(res, 200, { ok: true, seeded: seedIncidents.length, stored: result.items_count ?? seedIncidents.length, incidents: seedIncidents.map((i) => i.id) });
+    } finally {
+      seedInFlight = false;
     }
-    return send(res, 200, { ok: true, seeded: seedIncidents.length });
   }
 
   if (req.method === "POST" && url.pathname === "/api/analyze") {
-    const body = await readJson(req);
-    const incident = String(body.incident || "").trim();
-    if (!incident) return send(res, 400, { error: "Incident description is required." });
+    const incident = requiredText(await readJson(req), "incident", "A description of the current problem");
+    const matches = groupRecall(await recall(incident));
 
-    const recalled = normalizeRecall(await recall(incident));
-    const prompt = [
-      "You are MemoryOps, an incident-response copilot.",
-      "Use this memory bank as historical evidence, not as unquestionable truth.",
-      "For the CURRENT INCIDENT below, return:",
-      "1) likely historical pattern (or say none),",
-      "2) three concrete first checks,",
-      "3) the prior evidence that motivated them,",
-      "4) one verification step before any change.",
-      "Be concise. Do not invent a past incident that is not in memory.",
-      "",
-      `CURRENT INCIDENT: ${incident}`
-    ].join("\n");
-    const reflection = normalizeReflect(await reflect(prompt));
+    if (matches.length === 0) {
+      return send(res, 200, { ok: true, state: "no_experience", matches: [], recommendation: { structured: true, memoryUsed: false, matchedIncidentId: null, general: true, ...GENERAL_TROUBLESHOOTING } });
+    }
 
+    let recommendation;
+    try {
+      recommendation = shapeRecommendation(await reflect(reflectPrompt(incident, matches)), matches);
+    } catch (err) {
+      // Recall worked; show what was recalled and report the reflect failure honestly.
+      return send(res, 200, { ok: true, state: "match_found", matches, recommendation: null, reflectError: { message: err.message || "Reflect failed.", code: err.code || "reflect_failed" } });
+    }
     return send(res, 200, {
       ok: true,
-      recalled,
-      recommendation: reflection
+      state: recommendation.memoryUsed ? "recommendation_ready" : "no_experience",
+      matches,
+      recommendation
     });
   }
 
   if (req.method === "POST" && url.pathname === "/api/resolve") {
     const body = await readJson(req);
-    const incident = String(body.incident || "").trim();
-    const resolution = String(body.resolution || "").trim();
-    if (!incident || !resolution) {
-      return send(res, 400, { error: "Incident and resolution are required." });
-    }
-    const content = [
-      "Resolved incident learned from the current session.",
-      `Incident symptoms: ${incident}`,
-      `Resolution and outcome: ${resolution}`,
-      "Use this as historical evidence for future similar incidents."
-    ].join("\n");
-    await retain(content, "Resolution captured from MemoryOps demo");
-    return send(res, 200, { ok: true });
+    const incident = requiredText(body, "incident", "The problem description");
+    const resolution = requiredText(body, "resolution", "The resolution");
+    const now = new Date();
+    const id = `MO-${now.toISOString().slice(0, 19).replace(/\D/g, "").slice(2)}`;
+    const title = incident.split(/(?<=[.!?])\s/)[0].slice(0, 160);
+    const result = await retain([{
+      content: [
+        `Past solved problem ${id} (Saved from MemoryOps)`,
+        `Title: ${title}`,
+        `What happened: ${incident}`,
+        `What worked: ${resolution}`
+      ].join("\n"),
+      context: `Resolved problem ${id} saved by the team in MemoryOps`,
+      timestamp: now.toISOString(),
+      document_id: `memoryops-${id}`,
+      metadata: { memoryops_id: id, source: "memoryops-resolution" }
+    }]);
+    return send(res, 200, { ok: true, id, stored: result.items_count ?? 1 });
   }
 
   return false;
@@ -272,35 +443,35 @@ const mime = {
   ".svg": "image/svg+xml",
   ".png": "image/png"
 };
+const publicRoot = path.join(__dirname, "public");
 
-const server = http.createServer(async (req, res) => {
-  try {
-    const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
-
-    if (url.pathname.startsWith("/api/")) {
-      const handled = await api(req, res, url);
-      if (handled !== false) return;
-      return send(res, 404, { error: "API route not found." });
+export function createServer() {
+  return http.createServer(async (req, res) => {
+    try {
+      const url = new URL(req.url, "http://localhost");
+      if (url.pathname.startsWith("/api/")) {
+        const handled = await api(req, res, url);
+        if (handled !== false) return;
+        return send(res, 404, { error: "API route not found." });
+      }
+      const relative = url.pathname === "/" ? "/index.html" : decodeURIComponent(url.pathname);
+      const file = path.normalize(path.join(publicRoot, relative));
+      if (!file.startsWith(publicRoot + path.sep)) return send(res, 403, "Forbidden", "text/plain");
+      if (!fs.existsSync(file) || fs.statSync(file).isDirectory()) return send(res, 404, "Not found", "text/plain");
+      return send(res, 200, fs.readFileSync(file), mime[path.extname(file)] || "application/octet-stream");
+    } catch (err) {
+      if (err instanceof ApiError) {
+        return send(res, err.status, { error: err.message, code: err.code, ...(err.detail ? { detail: err.detail } : {}) });
+      }
+      console.error("Unexpected error:", redact(err?.stack || err?.message));
+      if (!res.headersSent) send(res, 500, { error: "Unexpected server error.", code: "internal" });
     }
+  });
+}
 
-    let relative = url.pathname === "/" ? "/index.html" : url.pathname;
-    const file = path.normalize(path.join(__dirname, "public", relative));
-    const publicRoot = path.join(__dirname, "public");
-    if (!file.startsWith(publicRoot)) return send(res, 403, "Forbidden", "text/plain");
-
-    if (!fs.existsSync(file) || fs.statSync(file).isDirectory()) {
-      return send(res, 404, "Not found", "text/plain");
-    }
-    const ext = path.extname(file);
-    return send(res, 200, fs.readFileSync(file), mime[ext] || "application/octet-stream");
-  } catch (err) {
-    console.error(err);
-    return send(res, 500, { error: err.message || "Unexpected server error." });
-  }
-});
-
-server.listen(PORT, () => {
-  console.log(`MemoryOps running at http://localhost:${PORT}`);
-  console.log(`Mode: ${MOCK_MODE ? "MOCK (do not use for final recording)" : "Hindsight Cloud"}`);
-  console.log(`Bank: ${BANK_ID}`);
-});
+if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
+  createServer().listen(PORT, () => {
+    console.log(`MemoryOps running at http://localhost:${PORT}`);
+    console.log(`Hindsight: ${BASE_URL}  bank: ${BANK_ID}  api key: ${API_KEY ? "set" : "MISSING"}`);
+  });
+}
