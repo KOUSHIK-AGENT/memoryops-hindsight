@@ -734,4 +734,32 @@ function esc(value) {
 }
 
 applyPreset("round1");
-refreshStatus();
+
+// ============================================================
+// FIRST-OPEN INTRO (runs once per page load; never on later state changes)
+// Shown for at least MIN_MS so it feels intentional, at most MAX_MS so it never holds the app back.
+// If memory status is still loading at MAX_MS, the dashboard's own "Checking…" state takes over.
+// ============================================================
+
+function runIntro(ready) {
+  const intro = $("intro");
+  const shell = $("appShell");
+  if (!intro) return;
+  const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+  const MIN_MS = reduce ? 500 : 1700;
+  const MAX_MS = 2600;
+  const started = performance.now();
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  shell.inert = true; // no keyboard focus behind the overlay
+
+  Promise.race([ready.catch(() => {}), wait(MAX_MS)])
+    .then(() => wait(Math.max(0, MIN_MS - (performance.now() - started))))
+    .then(() => {
+      shell.inert = false;
+      intro.classList.add("is-leaving");
+      document.body.classList.remove("intro-active");
+      setTimeout(() => intro.remove(), reduce ? 300 : 700);
+    });
+}
+
+runIntro(refreshStatus());
