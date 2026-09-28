@@ -21,7 +21,7 @@
         </div>
         <h1 class="product-title">MemoryOps</h1>
         <p class="product-headline">AI that remembers how your team solved problems before.</p>
-        <p class="product-subtext">When a technical problem happens again, MemoryOps recalls similar past problems, what caused them, and what worked.</p>
+        <p class="product-subtext">Every time the team solves a problem, MemoryOps remembers what actually worked. When something similar happens later, it starts with that experience instead of starting from zero.</p>
       </div>
 
       <div class="header-actions">
@@ -60,7 +60,7 @@
       <div class="step-divider" aria-hidden="true"></div>
       <div class="progress-step" id="step4" data-step="4">
         <span class="step-num">4</span>
-        <span class="step-label">Save today's solution</span>
+        <span class="step-label">Save verified solution</span>
       </div>
     </nav>
 
@@ -76,9 +76,11 @@
               <h2 id="section-current-problem" class="panel-title">What's happening now?</h2>
               <p class="panel-subtitle">Describe the issue your team is facing.</p>
             </div>
-            <div class="badge-group">
-              <span class="badge badge-accent">Example incident</span>
-              <button id="useDemoExample" class="btn-link" type="button" title="Populate with checkout incident">Use demo example</button>
+            <div class="demo-presets" role="group" aria-label="Demo problems">
+              <span class="preset-label">Demo problems</span>
+              <button class="preset-btn" type="button" data-preset="round1" title="Checkout breaks after an update">Round 1</button>
+              <button class="preset-btn" type="button" data-preset="round2" title="Same kind of problem, worded differently">Round 2 · reworded</button>
+              <button class="preset-btn" type="button" data-preset="unrelated" title="A problem unrelated to checkout">Unrelated</button>
             </div>
           </div>
 
@@ -125,46 +127,28 @@
           </div>
 
           <!-- Compact Pipeline Visualization -->
-          <div class="pipeline-card" aria-label="How MemoryOps uses memory">
-            <div class="pipeline-title">HOW MEMORY CREATES BETTER ANSWERS</div>
+          <div class="pipeline-card" aria-label="How MemoryOps learns">
+            <div class="pipeline-title">HOW MEMORYOPS LEARNS</div>
             <div class="pipeline-track">
-              <div class="pipeline-node active">
-                <span class="node-dot"></span>
-                <span class="node-text">Problem today</span>
-              </div>
+              <div class="pipeline-node" id="learnProblem"><span class="node-dot"></span><span class="node-text">1 Problem occurs</span></div>
               <span class="pipeline-arrow" aria-hidden="true">→</span>
-              <div class="pipeline-node" id="pipelineSearch">
-                <span class="node-dot"></span>
-                <span class="node-text">Search memory</span>
-              </div>
+              <div class="pipeline-node" id="learnRecalled"><span class="node-dot"></span><span class="node-text">2 Experience recalled</span></div>
               <span class="pipeline-arrow" aria-hidden="true">→</span>
-              <div class="pipeline-node" id="pipelineRecalled">
-                <span class="node-dot"></span>
-                <span class="node-text">Past solution recalled</span>
-              </div>
+              <div class="pipeline-node" id="learnVerify"><span class="node-dot"></span><span class="node-text">3 Engineer verifies</span></div>
               <span class="pipeline-arrow" aria-hidden="true">→</span>
-              <div class="pipeline-node" id="pipelineBetter">
-                <span class="node-dot"></span>
-                <span class="node-text">Better recommendation</span>
-              </div>
+              <div class="pipeline-node" id="learnSaved"><span class="node-dot"></span><span class="node-text">4 Solution saved</span></div>
               <span class="pipeline-arrow" aria-hidden="true">→</span>
-              <div class="pipeline-node" id="pipelineSave">
-                <span class="node-dot"></span>
-                <span class="node-text">Save today's solution</span>
-              </div>
+              <div class="pipeline-node" id="learnFuture"><span class="node-dot"></span><span class="node-text">5 Next time starts with it</span></div>
             </div>
+            <p class="loop-note">Memory recommends → a person verifies, acts, and confirms the outcome → memory learns. MemoryOps never changes your systems.</p>
           </div>
 
-          <!-- Compact Before / After Visual Comparison -->
-          <div class="compare-grid">
-            <div class="compare-col before-col" id="compareBefore">
-              <div class="compare-tag">NO PAST EXPERIENCE</div>
-              <p class="compare-text" id="compareBeforeText">MemoryOps can only suggest general troubleshooting steps.</p>
-            </div>
-            <div class="compare-col after-col" id="compareAfter">
-              <div class="compare-tag">PAST EXPERIENCE AVAILABLE</div>
-              <p class="compare-text" id="compareAfterText">MemoryOps can use a similar problem your team solved before.</p>
-            </div>
+          <div class="learning-log">
+            <div class="pipeline-title">LEARNING PROGRESS · THIS SESSION</div>
+            <ol id="learningLog" class="log-list">
+              <li class="log-empty">Nothing yet. Each analysis and each saved experience is logged here with what Hindsight actually returned.</li>
+            </ol>
+            <p class="log-foot">MemoryOps becomes more useful as verified incident experience accumulates.</p>
           </div>
         </article>
       </section>
@@ -228,22 +212,46 @@
           <div>
             <div class="panel-kicker">STEP 4 • CLOSE THE LOOP</div>
             <h2 id="save-section-title" class="panel-title">Save what worked</h2>
-            <p class="panel-subtitle">Once the problem is resolved, save the final solution so MemoryOps can help with similar problems in the future.</p>
+            <p class="panel-subtitle">After a person has fixed the problem, record what really happened — including what didn't work — so the next similar problem starts with this experience.</p>
           </div>
           <span class="badge badge-memory">Continuous Learning</span>
         </div>
 
-        <div class="save-form-row">
-          <div class="save-input-group">
-            <label for="resolution" class="input-label">How was this problem resolved?</label>
-            <input id="resolution" type="text" spellcheck="false" value="Restored the database connection limit from 5 to 30, restarted the checkout service, and confirmed orders were working normally again." placeholder="Describe what fixed the issue in production…" />
-            <div id="resolutionError" class="field-error" role="alert" style="display: none;"></div>
+        <div class="learn-grid">
+          <div class="save-input-group span-2">
+            <label for="resolution" class="input-label">What actually fixed the problem? <span class="req">required</span></label>
+            <input id="resolution" type="text" spellcheck="false" placeholder="The action that really resolved it" />
           </div>
+          <div class="save-input-group">
+            <label for="area" class="input-label">Affected area <span class="opt">optional</span></label>
+            <input id="area" type="text" spellcheck="false" placeholder="e.g. Checkout" />
+          </div>
+          <div class="save-input-group">
+            <label for="cause" class="input-label">What caused it? <span class="opt">optional</span></label>
+            <input id="cause" type="text" spellcheck="false" placeholder="Root cause, if known" />
+            <label class="check-inline"><input id="causeConfirmed" type="checkbox" /> Cause is confirmed, not a guess</label>
+          </div>
+          <div class="save-input-group">
+            <label for="attempted" class="input-label">Tried, but did NOT fix it <span class="opt">optional</span></label>
+            <input id="attempted" type="text" spellcheck="false" placeholder="Actions that didn't work" />
+          </div>
+          <div class="save-input-group">
+            <label for="outcome" class="input-label">Final outcome <span class="opt">optional</span></label>
+            <input id="outcome" type="text" spellcheck="false" placeholder="What the system looked like afterwards" />
+          </div>
+          <div class="save-input-group span-3">
+            <label for="lesson" class="input-label">Lesson for next time <span class="opt">optional</span></label>
+            <input id="lesson" type="text" spellcheck="false" placeholder="What should the team check first next time?" />
+          </div>
+        </div>
+        <div class="save-confirm-row">
+          <label class="check-inline confirm-check"><input id="humanConfirmed" type="checkbox" /> <span><strong>I confirm this is what actually happened.</strong> Only human-confirmed outcomes become experience — AI recommendations are never saved as fact.</span></label>
           <button id="resolve" class="btn btn-save" type="button">
             <svg class="btn-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
-            <span>Save solution to memory</span>
+            <span>Save verified experience</span>
           </button>
         </div>
+        <div id="resolutionError" class="field-error" role="alert" style="display: none;"></div>
 
         <!-- Strong Success Confirmation Box -->
         <div id="saveSuccessBox" class="save-success-box" style="display: none;" role="status">
@@ -251,8 +259,8 @@
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
           </div>
           <div class="success-content">
-            <div class="success-title">Saved to Hindsight ✓</div>
-            <div class="success-msg">This experience can now help with future problems.</div>
+            <div class="success-title">✓ Experience learned · saved to Hindsight</div>
+            <div class="success-msg">MemoryOps can use this verified solution when a similar problem happens again.</div>
             <div class="success-preview" id="savedResolutionPreview"></div>
           </div>
         </div>
