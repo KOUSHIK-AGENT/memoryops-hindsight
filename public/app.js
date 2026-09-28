@@ -13,7 +13,8 @@ const PRESETS = {
     attempted: "Restarted the checkout service only; the database timeouts came back within minutes.",
     worked: "Restored the database connection limit from 5 to 30, restarted the checkout service, and confirmed orders were working normally again.",
     outcome: "Orders returned to normal and database timeouts stopped.",
-    lesson: "For checkout failures plus database timeouts right after an update, compare database connection settings with the last known-good configuration first."
+    lesson: "For checkout failures plus database timeouts right after an update, compare database connection settings with the last known-good configuration first.",
+    observation: "Current pool is 5. Previous version was 30."
   },
   round2: {
     problem: "Customers report that checkout becomes unavailable after today's release. Database requests are timing out and capacity appears exhausted.",
@@ -23,7 +24,30 @@ const PRESETS = {
     attempted: "Added more checkout servers; no improvement, because the database connection limit was still 5.",
     worked: "Fixed the shared configuration template, restored the connection limit to 30, and redeployed checkout.",
     outcome: "Checkout recovered and database connections returned to the normal range.",
-    lesson: "If the connection limit drops again after a release, check the shared configuration template, not just the service settings."
+    lesson: "If the connection limit drops again after a release, check the shared configuration template, not just the service settings.",
+    observation: "Pool is 5 again. The shared configuration template changed in this release."
+  },
+  round3: {
+    problem: "After this afternoon's deployment the order page times out and the database reports it has no free connections left.",
+    area: "Checkout",
+    cause: "The deployment's new container settings capped each checkout instance at 3 database connections.",
+    causeConfirmed: true,
+    attempted: "Scaled out checkout instances; errors got worse.",
+    worked: "Raised the per-instance database connection limit back to 20 and redeployed checkout.",
+    outcome: "Order page recovered and database connection waits disappeared.",
+    lesson: "When checkout times out after a deployment, check per-instance database connection limits in the new settings.",
+    observation: "Each checkout instance is limited to 3 database connections."
+  },
+  round4: {
+    problem: "Checkout started failing right after today's release; customers see an error when submitting orders, but database connections look healthy.",
+    area: "Checkout",
+    cause: "The tax service's TLS certificate expired the same morning because automatic renewal had failed.",
+    causeConfirmed: true,
+    attempted: "Rolled back the release; errors continued.",
+    worked: "Renewed the tax service certificate and fixed the renewal job.",
+    outcome: "Orders succeeded again.",
+    lesson: "If checkout fails after a release but database connections are healthy, check certificate expiry on the services checkout calls.",
+    observation: "Connection pool is 30 as usual. Logs show the tax service certificate has expired."
   },
   unrelated: {
     problem: "Product images on the company website load very slowly for visitors in Europe since this morning. Pages open, but pictures take a long time to appear.",
@@ -33,7 +57,8 @@ const PRESETS = {
     attempted: "",
     worked: "Restored the regional image caching rule and cleared the cache.",
     outcome: "Images load quickly again for European visitors.",
-    lesson: "Slow images in one region: check that region's caching rules first."
+    lesson: "Slow images in one region: check that region's caching rules first.",
+    observation: ""
   }
 };
 const SAVE_FIELDS = ["area", "cause", "attempted", "outcome", "lesson"];
@@ -49,6 +74,9 @@ const state = {
   demoState: "ready",
   analyses: 0,
   lastAnalysis: null, // { incident, matchedId } for feedback
+  hypotheses: [],     // current diagnostic hypotheses (session only)
+  observations: [],   // what the engineer observed (session evidence; retained only on confirmed save)
+  observationHint: "",
   busy: { analyze: false, seed: false, resolve: false }
 };
 
@@ -167,7 +195,7 @@ function renderMemoryBadge() {
     badge.textContent = "Memory unavailable";
     badge.className = "badge badge-neutral";
   } else if (Number.isFinite(state.counts?.historical) && Number.isFinite(state.counts?.learned) && state.documents > 0) {
-    badge.textContent = `${state.counts.historical} historical incidents · ${state.counts.learned} learned`;
+    badge.textContent = `${state.counts.historical} historical · ${state.counts.learned} learned${state.counts.patterns ? ` · ${state.counts.patterns} team pattern${state.counts.patterns > 1 ? "s" : ""}` : ""}`;
     badge.title = "Exact counts of documents in this Hindsight bank: dataset/sample incidents and human-confirmed resolutions saved from MemoryOps.";
   } else if (state.documents > 0) {
     badge.textContent = `${countLabel(state.documents)} stored`;
@@ -283,6 +311,9 @@ $("analyze").addEventListener("click", () => {
       const rec = data.recommendation;
       const matched = rec?.memoryUsed ? data.matches.find((m) => m.incidentId === rec.matchedIncidentId) : null;
 
+      if (state.lastAnalysis?.incident !== text) state.observations = [];
+      state.hypotheses = data.evidence?.hypotheses || [];
+      renderObservations();
       state.analyses += 1;
       state.lastAnalysis = { incident: text, matchedId: matched?.incidentId || null };
       renderMemories(data, matched);
@@ -428,11 +459,63 @@ function checksList(checks) {
   return `<ol class="checks-list">${checks.map((c, i) => `<li class="check-item"><span class="check-num">${i + 1}</span><span>${esc(c)}</span></li>`).join("")}</ol>`;
 }
 
+const LEVEL_TEXT = {
+  HIGH: "Several confirmed incidents agree with today's facts.",
+  MEDIUM: "Supported by confirmed history, with some uncertainty.",
+  LOW: "Weak or unconfirmed historical evidence.",
+  INSUFFICIENT: "No relevant historical evidence."
+};
+
+function confidenceHtml(ev) {
+  if (!ev) return "";
+  const c = ev.confidence;
+  const why = c.reasons.length ? `<details class="rec-details"><summary>How this confidence was decided</summary><ul class="fact-list">${c.reasons.map((r) => `<li>${esc(r)}</li>`).join("")}</ul></details>` : "";
+  return `<div class="confidence-row conf-${c.level.toLowerCase()}"><span class="field-label">Memory confidence</span><span class="conf-chip">${c.level}</span><span class="conf-text">${esc(LEVEL_TEXT[c.level])}</span></div>
+    ${c.statement ? `<p class="rec-text abstain">${esc(c.statement)}</p>` : ""}${why}`;
+}
+
+function teamHtml(team) {
+  if (!team) return "";
+  let html = "";
+  for (const p of team.patterns || []) {
+    html += block("rec-block-team", ICON.memory, "Team has learned", `<p class="rec-text">${esc(p.statement)}</p>
+      <p class="rec-caption">Supporting: ${p.supporting_incidents.map(esc).join(", ")}${p.counterexamples.length ? ` · Exceptions: ${p.counterexamples.map((c) => `${esc(c.id)} (${esc(c.cause.toLowerCase())})`).join(", ")}` : ""}. Consolidated from human-confirmed incidents only.</p>`);
+  }
+  const b = team.playbook;
+  if (b) {
+    html += `<details class="rec-block rec-block-team playbook"><summary class="rec-label">${ICON.checks} Team playbook: ${esc(b.title)} · learned from ${b.learned_from} confirmed incidents</summary>
+      <ol class="playbook-steps">${b.steps.map((st) => `<li><strong>${esc(st.step)}</strong><span class="rec-caption">Why this check exists: ${esc(st.why)} (${st.supporting_incidents.map(esc).join(", ")})</span></li>`).join("")}</ol>
+      ${b.cautions.map((c) => `<p class="rec-caption">⚠ ${esc(c.text)}</p>`).join("")}
+      <p class="rec-caption">Guidance learned from verified history. A person runs every step; MemoryOps never acts on systems.</p></details>`;
+  }
+  return html;
+}
+
+function diagnosisHtml() {
+  const hyps = state.hypotheses || [];
+  const next = state.nextBestCheck;
+  const hypList = hyps.length ? `<details class="rec-details" ${state.observations.length ? "open" : ""}><summary>Current hypotheses (${hyps.length})</summary><ul class="hyp-list">${hyps.map((h) => `
+      <li class="hyp hyp-${h.status.replace(" ", "-")}"><div><strong>${esc(h.hypothesis)}</strong> <span class="conf-chip small">${h.confidence}</span> <span class="hyp-status">${esc(h.status)}</span></div>
+      <div class="rec-caption">Past example: ${esc(h.example_cause || "")} · Supporting: ${h.supporting_memories.map((m) => esc(m.id)).join(", ")}</div>
+      ${h.supporting_current_evidence?.length ? `<div class="rec-caption">Matches today: ${h.supporting_current_evidence.map(esc).join("; ")}</div>` : ""}
+      ${h.observations_for?.length ? `<div class="rec-caption obs-for">Your observation supports: ${h.observations_for.map(esc).join("; ")}</div>` : ""}
+      ${h.evidence_against?.length ? `<div class="rec-caption obs-against">Against: ${h.evidence_against.map(esc).join("; ")}</div>` : ""}</li>`).join("")}</ul></details>` : "";
+  const nextHtml = next ? `<p class="rec-text"><strong>${esc(next.text)}</strong></p>${next.expected_if_true ? `<p class="rec-caption">Expected if true: ${esc(next.expected_if_true)}</p>` : ""}` : `<p class="rec-text">No remembered cause to test yet. Record what you check; it is kept only for this session.</p>`;
+  return block("rec-block-diagnose", ICON.pattern, "Next best check", `${nextHtml}${hypList}
+    <div class="obs-row"><input id="observationInput" type="text" spellcheck="false" placeholder="What did you observe? e.g. ${esc(state.observationHint || "Current pool is 5; previous version was 30")}" />
+    <button class="preset-btn" type="button" id="addObservation">Record observation</button></div>
+    <p class="rec-caption">Observations are session evidence only. They are saved to memory only if you confirm the final outcome in Step 4.</p>`);
+}
+
 function renderRecommendation(data, matched) {
   const container = $("recommendationContent");
   const badge = $("recommendationContextBadge");
   const rec = data.recommendation;
-  let html = "";
+  const ev = data.evidence;
+  state.nextBestCheck = ev?.nextBestCheck || null;
+  const diag = ev ? `<div id="diagnosisBox">${diagnosisHtml()}</div>` : "";
+  const team = teamHtml(data.team);
+  let html = confidenceHtml(ev);
 
   if (!rec) {
     badge.textContent = "Recommendation failed";
@@ -450,15 +533,24 @@ function renderRecommendation(data, matched) {
       ["Why MemoryOps suggests checking this", rec.why]
     ].filter(([, v]) => v).map(([k, v]) => `<div class="prov-row"><span class="field-label">${esc(k)}</span><p class="rec-text">${esc(v)}</p></div>`).join("");
     html += block("rec-block-evidence", ICON.memory, "Memory used", prov);
+    if (ev?.why?.reasons?.length) {
+      html += `<details class="rec-block rec-block-why"><summary class="rec-label">${ICON.memory} Why this recommendation?</summary><ul class="fact-list">${ev.why.reasons.map((r) => `<li>${esc(r)}</li>`).join("")}</ul><p class="rec-caption">Supporting incidents: ${ev.why.supporting.map(esc).join(", ")}</p></details>`;
+    }
+    if (ev?.conflicts?.detected) {
+      html += block("rec-block-avoid", ICON.memory, "Conflicting history", `<p class="rec-text">${esc(ev.conflicts.text)}</p><ul class="fact-list">${ev.conflicts.causes.map((c) => `<li>${esc(c.cause)}: ${c.incidents.map(esc).join(", ")}</li>`).join("")}</ul>`);
+    }
+    html += diag;
     if (rec.structured) {
       if (rec.pattern) html += block("rec-block-pattern", ICON.pattern, "Likely pattern", `<p class="rec-text">${esc(rec.pattern)}</p>`);
       if (rec.checks?.length) html += block("rec-block-checks", ICON.checks, "What I would check first", checksList(rec.checks));
-      if (rec.avoid) html += block("rec-block-avoid", ICON.safety, "Already tried before, did NOT fix it", `<p class="rec-text">${esc(rec.avoid)}</p>`);
+      if (ev?.failedBefore?.length) html += block("rec-block-avoid", ICON.safety, "Previously tried, did NOT work", `<ul class="fact-list">${ev.failedBefore.map((f) => `<li>${esc(f.text)}</li>`).join("")}</ul>`);
+      else if (rec.avoid) html += block("rec-block-avoid", ICON.safety, "Previously tried, did NOT work", `<p class="rec-text">${esc(rec.avoid)}</p>`);
       if (rec.conflict) html += block("rec-block-avoid", ICON.memory, "Conflicting past evidence", `<p class="rec-text">${esc(rec.conflict)} Neither is treated as certain.</p>`);
       if (rec.teamLearned) html += block("rec-block-evidence", ICON.memory, "Team learned", `<p class="rec-text">${esc(rec.teamLearned)}</p><p class="rec-caption">Summarised by Hindsight reflect from stored team memory.</p>`);
     } else {
       html += block("rec-block-checks", ICON.checks, "Recommendation", `<p class="rec-text pre">${esc(rec.text)}</p>`);
     }
+    html += team;
     html += block("rec-block-safety", ICON.safety, "Safety note",
       `<p class="rec-text"><strong>${EVIDENCE_NOT_CERTAINTY}</strong>${rec.safety ? ` ${esc(rec.safety)}` : ""}</p>`);
     html += `<div class="feedback-row" id="feedbackRow"><span>Was this past incident useful?</span>
@@ -471,17 +563,57 @@ function renderRecommendation(data, matched) {
       ? `<p class="rec-text"><strong>No similar solved problem was found.</strong> These are general first steps, not based on team memory:</p>${checksList(rec.checks || [])}`
       : `<p class="rec-text"><strong>No similar solved problem was found.</strong></p><p class="rec-text pre">${esc(rec.text)}</p>`;
     const tip = `<p class="rec-tip"><strong>Next:</strong> once a person has fixed this, save what actually worked in Step 4. The next similar problem will start from that verified experience.</p>`;
+    html += diag;
     html += block("rec-block-general", ICON.memory, "What I would check first (general)", body + tip);
+    html += team;
     if (rec.safety) html += block("rec-block-safety", ICON.safety, "Safety note", `<p class="rec-text">${esc(rec.safety)}</p>`);
   }
 
+  if (!rec) html += diag + team;
   container.innerHTML = html;
   container.style.display = "flex";
+}
+
+function renderObservations() {
+  const box = $("sessionObservations");
+  box.innerHTML = state.observations.length
+    ? `<span class="field-label">Observations this session (saved only if you confirm)</span><ul class="fact-list">${state.observations.map((o) => `<li>${esc(o)}</li>`).join("")}</ul>`
+    : "";
+}
+
+async function addObservation() {
+  const input = $("observationInput");
+  const text = input.value.trim();
+  if (!text) { input.focus(); return; }
+  state.observations.push(text);
+  renderObservations();
+  if (state.hypotheses.length) {
+    try {
+      const r = await apiRequest("/api/diagnose", { method: "POST", body: JSON.stringify({ hypotheses: state.hypotheses, observations: state.observations }) });
+      state.hypotheses = r.hypotheses;
+      state.nextBestCheck = r.nextBestCheck;
+      const lead = r.hypotheses[0];
+      logLearning(`Observation recorded → leading hypothesis: <strong>${esc(lead.hypothesis)}</strong> (${esc(lead.status)})`);
+    } catch (err) {
+      showToast("Could not update hypotheses.", "error");
+      showBannerError(err);
+    }
+  } else {
+    logLearning("Observation recorded (session evidence only)");
+  }
+  $("diagnosisBox").innerHTML = diagnosisHtml();
 }
 
 // ============================================================
 // SAVE WHAT WORKED
 // ============================================================
+
+$("recommendationContent").addEventListener("click", (e) => {
+  if (e.target.closest("#addObservation")) addObservation();
+});
+$("recommendationContent").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && e.target.id === "observationInput") addObservation();
+});
 
 $("recommendationContent").addEventListener("click", async (e) => {
   const btn = e.target.closest("[data-helpful]");
@@ -515,7 +647,7 @@ $("resolve").addEventListener("click", () => {
     return;
   }
   errorEl.style.display = "none";
-  const payload = { incident, worked, confirmed: true, causeConfirmed: $("causeConfirmed").checked };
+  const payload = { incident, worked, confirmed: true, causeConfirmed: $("causeConfirmed").checked, observations: state.observations };
   for (const f of SAVE_FIELDS) payload[f] = $(f).value.trim();
 
   return withBusy("resolve", $("resolve"), "Saving to Hindsight…", async () => {
@@ -532,6 +664,16 @@ $("resolve").addEventListener("click", () => {
       await refreshStatus();
       setDemoState("saved", { id: res.id });
       logLearning(`Saved verified experience <strong>${esc(res.id)}</strong>${Number.isFinite(state.documents) ? ` · ${countLabel(state.documents)} now stored` : ""}`);
+      state.observations = [];
+      renderObservations();
+      for (const ch of res.consolidation?.changes || []) {
+        if (ch.type === "TEAM_PATTERN" && ch.status !== "unchanged") {
+          const p = res.consolidation.patterns.find((x) => x.id === ch.id);
+          logLearning(`<strong>Team has learned</strong> (${ch.status}): ${esc(p?.statement || ch.id)}`);
+          showToast(`Team pattern ${ch.status}: learned from ${p?.supporting ?? "3+"} confirmed incidents.`, "success");
+        }
+        if (ch.type === "PLAYBOOK" && ch.status !== "unchanged") logLearning(`<strong>Team playbook</strong> ${ch.status} from verified history`);
+      }
     } catch (err) {
       showToast("Could not save the solution.", "error");
       showBannerError(err);
@@ -549,6 +691,7 @@ function applyPreset(key) {
   $("resolution").value = p.worked;
   for (const f of SAVE_FIELDS) $(f).value = p[f];
   $("causeConfirmed").checked = p.causeConfirmed;
+  state.observationHint = p.observation || "";
   $("humanConfirmed").checked = false;
   $("incidentError").style.display = "none";
   $("resolutionError").style.display = "none";
@@ -574,6 +717,9 @@ $("resetDemo").addEventListener("click", () => {
   $("learningLog").innerHTML = '<li class="log-empty">Screen cleared. Memories already stored in Hindsight are kept.</li>';
   state.analyses = 0;
   state.lastAnalysis = null;
+  state.hypotheses = [];
+  state.observations = [];
+  renderObservations();
   setStep(1);
   setPipeline({});
   setDemoState("ready");

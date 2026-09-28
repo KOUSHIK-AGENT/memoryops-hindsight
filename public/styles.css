@@ -1349,3 +1349,34 @@ ol.checks-list { list-style: none; padding: 0; }
 .card-input .panel-header { flex-wrap: wrap; }
 .card-input .panel-header > div:first-child { flex: 1 1 240px; }
 .incident-id { white-space: nowrap; }
+
+/* ---- Diagnostic intelligence ---- */
+.confidence-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 2px 2px 0; }
+.conf-chip { font-size: 11px; font-weight: 800; letter-spacing: 0.06em; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--border-medium); color: var(--text-secondary); }
+.conf-chip.small { font-size: 9.5px; padding: 1px 6px; }
+.conf-text { font-size: 12px; color: var(--text-muted); }
+.conf-high .conf-chip { color: #a7f3d0; background: var(--memory-tint); border-color: var(--border-memory); }
+.conf-medium .conf-chip { color: #bfdbfe; background: var(--azure-tint); border-color: var(--border-accent); }
+.conf-low .conf-chip, .conf-insufficient .conf-chip { color: #fcd34d; background: var(--amber-tint); border-color: rgba(245, 158, 11, 0.4); }
+.rec-text.abstain { color: #fcd34d; font-weight: 600; margin: 0; }
+.rec-details { font-size: 12px; color: var(--text-muted); }
+.rec-details summary, details.rec-block > summary { cursor: pointer; list-style: revert; }
+.rec-details summary { color: var(--azure-blue); }
+.rec-block-why { border-left: 3px solid #a78bfa; }
+.rec-block-why .rec-label { color: #a78bfa; }
+.rec-block-diagnose { border-left: 3px solid var(--azure-blue); }
+.rec-block-diagnose .rec-label { color: var(--azure-blue); }
+.rec-block-team { border-left: 3px solid var(--memory-green); background: rgba(16, 185, 129, 0.06); }
+.rec-block-team .rec-label { color: var(--memory-green); }
+.playbook-steps { margin: 8px 0 4px; padding-left: 20px; display: flex; flex-direction: column; gap: 8px; font-size: 13px; color: var(--text-secondary); }
+.playbook-steps .rec-caption { display: block; }
+.hyp-list { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.hyp { border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: 8px 10px; font-size: 12.5px; color: var(--text-secondary); }
+.hyp-status { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.hyp-supported { border-color: var(--border-memory); }
+.hyp-weakened, .hyp-ruled-out { opacity: 0.6; }
+.obs-for { color: #a7f3d0; }
+.obs-against { color: #fca5a5; }
+.obs-row { display: flex; gap: 8px; margin-top: 10px; }
+.obs-row input { flex: 1; padding: 8px 12px; font-size: 13px; }
+.session-obs { margin-top: 10px; }

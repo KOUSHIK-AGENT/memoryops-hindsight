@@ -20,6 +20,11 @@ before(async () => {
     for await (const c of req) raw += c;
     const body = raw ? JSON.parse(raw) : null;
     calls.push({ method: req.method, url: req.url, auth: req.headers.authorization, body });
+    // Document reads (team knowledge / consolidation) 404 unless a test opts in: a bank with no patterns.
+    if (req.url.includes("/documents") && !handler.documents) {
+      res.writeHead(404, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ detail: "not found" }));
+    }
     const out = await handler(req, body);
     if (out === "hang") return; // never respond -> exercises timeout
     res.writeHead(out.status || 200, { "Content-Type": "application/json" });
@@ -79,18 +84,18 @@ const recallWithCheckout = {
 };
 
 test("status reports a real connection and document count from /stats", async () => {
-  const totals = { "memoryops-INC-": 50, "memoryops-MO-": 2, "memoryops-feedback-": 1 };
-  handler = (req) => {
+  const totals = { "memoryops-INC-": 50, "memoryops-MO-": 2, "memoryops-feedback-": 1, "memoryops-pattern-": 1, "memoryops-playbook-": 1 };
+  handler = Object.assign((req) => {
     const u = new URL(req.url, "http://x");
     if (u.pathname === "/v1/default/banks/test-bank/documents") return { json: { items: [], total: totals[u.searchParams.get("q")], limit: 1, offset: 0 } };
     assert.equal(u.pathname, "/v1/default/banks/test-bank/stats");
     return { json: { bank_id: "test-bank", total_nodes: 12, total_documents: 53, pending_operations: 0 } };
-  };
+  }, { documents: true });
   const res = await fetch(base + "/api/status").then((r) => r.json());
   assert.equal(res.connected, true);
   assert.equal(res.documents, 53);
   assert.equal(res.facts, 12);
-  assert.deepEqual(res.counts, { historical: 50, learned: 2, feedback: 1 }, "real per-kind counts from GET /documents?q=");
+  assert.deepEqual(res.counts, { historical: 50, learned: 2, feedback: 1, patterns: 1, playbooks: 1 }, "real per-kind counts from GET /documents?q=");
   assert.equal(calls[0].auth, `Bearer ${FAKE_KEY}`);
 });
 
@@ -117,7 +122,9 @@ test("analyze with empty memory returns general troubleshooting and skips reflec
   assert.equal(res.json.state, "no_experience");
   assert.equal(res.json.matches.length, 0);
   assert.equal(res.json.recommendation.memoryUsed, false);
-  assert.equal(calls.length, 1, "reflect must not run when nothing was recalled");
+  assert.equal(calls.filter((c) => c.url.endsWith("/reflect")).length, 0, "reflect must not run when nothing was recalled");
+  assert.equal(res.json.evidence.confidence.level, "INSUFFICIENT");
+  assert.match(res.json.evidence.confidence.statement, /does not have enough historical evidence/);
   assert.doesNotMatch(res.text, /INC-1042/, "no fabricated past incident");
 });
 
@@ -379,4 +386,69 @@ test("learning loop: fresh -> save confirmed fix -> reworded problem recalls it 
   const r3 = await post("/api/analyze", { incident: "Marketing images on the company website load slowly for visitors in Europe." });
   assert.equal(r3.json.recommendation.memoryUsed, false);
   assert.notEqual(r3.json.state, "recommendation_ready");
+});
+
+// ---------------- Diagnostic loop & consolidation (server) ----------------
+test("diagnose updates hypotheses from session observations and never calls Hindsight", async () => {
+  const hyp = [{ id: "connection-config", hypothesis: "Database connection capacity/configuration", keywords: ["pool", "connection", "30"], confidence: "MEDIUM", next_check: "Compare pool size", expected_if_true: "pool reduced", supporting_memories: [] }];
+  const res = await post("/api/diagnose", { hypotheses: hyp, observations: ["Current pool is 5. Previous version was 30."] });
+  assert.equal(res.status, 200);
+  assert.equal(res.json.retained, false);
+  assert.equal(res.json.hypotheses[0].status, "supported");
+  assert.equal(calls.length, 0, "session evidence is not sent to memory");
+  assert.equal((await post("/api/diagnose", { hypotheses: "x", observations: [] })).status, 400);
+});
+
+test("observations are stored only as part of a confirmed resolution", async () => {
+  handler = (req, body) => ({ json: { success: true, bank_id: "test-bank", items_count: body.items.length, async: false } });
+  const refused = await post("/api/resolve", { incident: INCIDENT, worked: "Restored pool", observations: ["pool was 5"] });
+  assert.equal(refused.status, 400);
+  assert.equal(calls.length, 0);
+  const ok = await post("/api/resolve", { incident: INCIDENT, worked: "Restored pool", confirmed: true, observations: ["pool was 5", "previous was 30"] });
+  assert.equal(ok.status, 200);
+  assert.match(calls.find((c) => c.url.endsWith("/memories")).body.items[0].content, /Observations during diagnosis: pool was 5; previous was 30/);
+});
+
+test("consolidation: pattern + playbook appear at 3 confirmed incidents, update in place, never delete", async () => {
+  const store = new Map();
+  handler = Object.assign((req, body) => {
+    const u = new URL(req.url, "http://x");
+    if (u.pathname.endsWith("/memories") && req.method === "POST") {
+      for (const it of body.items) store.set(it.document_id, it);
+      return { json: { success: true, bank_id: "test-bank", items_count: body.items.length, async: false } };
+    }
+    if (u.pathname.endsWith("/documents")) {
+      const q = u.searchParams.get("q") || "";
+      const items = [...store.keys()].filter((k) => k.includes(q)).map((id) => ({ id }));
+      return { json: { items, total: items.length, limit: 100, offset: 0 } };
+    }
+    const m = u.pathname.match(/\/documents\/(.+)$/);
+    if (m) {
+      const d = store.get(decodeURIComponent(m[1]));
+      return d ? { json: { id: d.document_id, original_text: d.content, document_metadata: d.metadata } } : { status: 404, json: { detail: "nf" } };
+    }
+    return { status: 404, json: {} };
+  }, { documents: true });
+  const save = (cause) => post("/api/resolve", { incident: "Checkout failing after today's release; database connections exhausted.", area: "Checkout", confirmed: true, causeConfirmed: true, cause, worked: "Restored the database connection limit", attempted: "Restarted the checkout service", lesson: "Compare database connection settings with the last known-good configuration." });
+
+  const r1 = await save("Database connection limit lowered to 5 in the release");
+  const r2 = await save("Connection pool size reduced by a shared template");
+  assert.deepEqual(r2.json.consolidation.changes, [], "two incidents: no pattern yet");
+  const r3 = await save("Per-instance database connection limit capped at 3");
+  assert.deepEqual(r3.json.consolidation.changes.map((c) => `${c.type}:${c.status}`), ["TEAM_PATTERN:created", "PLAYBOOK:created"]);
+  assert.equal(r3.json.consolidation.patterns[0].supporting, 3);
+
+  const again = await post("/api/consolidate", {});
+  assert.deepEqual(again.json.changes.map((c) => c.status), ["unchanged", "unchanged"], "no duplicate or rewrite");
+  const r4 = await post("/api/resolve", { incident: "Checkout failing after today's release; errors when orders are submitted.", confirmed: true, causeConfirmed: true, cause: "Tax service TLS certificate expired", worked: "Renewed the certificate" });
+  assert.deepEqual(r4.json.consolidation.changes.map((c) => c.status), ["updated", "updated"]);
+  assert.equal([...store.keys()].filter((k) => k.startsWith("memoryops-pattern-")).length, 1);
+  assert.equal([...store.keys()].filter((k) => /^memoryops-MO-/.test(k)).length, 4, "incidents are never removed");
+  assert.ok(!calls.some((c) => c.method === "DELETE"));
+
+  // Analysis reads team knowledge back and shows the counterexample-aware statement.
+  const a = await post("/api/analyze", { incident: "Orders fail right after today's release and database connections are exhausted." });
+  assert.match(a.json.team.patterns[0].statement, /but similar symptoms have also come from certificate/);
+  assert.equal(a.json.team.playbook.learned_from, 4);
+  for (const r of [r1, r3, r4, again, a]) assert.ok(!r.text.includes(FAKE_KEY));
 });
