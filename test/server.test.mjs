@@ -34,6 +34,7 @@ before(async () => {
 
   Object.assign(process.env, {
     MEMORYOPS_SKIP_DOTENV: "1",
+    MEMORYOPS_QUIET: "1",
     HINDSIGHT_BASE_URL: `http://127.0.0.1:${hsPort}`,
     HINDSIGHT_API_KEY: FAKE_KEY,
     HINDSIGHT_BANK_ID: "test-bank",
@@ -467,4 +468,13 @@ test("analysis includes a suggested fix only when based on a recalled confirmed 
     : { json: { text: "", structured_output: { similar_problem_found: false, matched_incident_id: "", likely_pattern: "", first_checks: ["a"], why: "", safety_note: "", avoid: "", conflict_note: "", team_learned: "" } } };
   const without = await post("/api/analyze", { incident: "Orders fail right after today's release and database connections are exhausted." });
   assert.equal(without.json.suggestedFix ?? null, null);
+});
+
+test("reflect naming a recalled incident in a wrapped format is still attributed", async () => {
+  handler = (req) => req.url.endsWith("/memories/recall")
+    ? { json: recallWithCheckout }
+    : { json: { text: "", structured_output: { similar_problem_found: true, matched_incident_id: "inc-1042 (checkout pool regression)", likely_pattern: "p", first_checks: ["a"], why: "w", safety_note: "s", avoid: "", conflict_note: "", team_learned: "" } } };
+  const res = await post("/api/analyze", { incident: INCIDENT });
+  assert.equal(res.json.recommendation.matchedIncidentId, "INC-1042");
+  assert.equal(res.json.state, "recommendation_ready");
 });

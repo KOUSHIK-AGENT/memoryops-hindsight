@@ -279,9 +279,11 @@ export function shapeRecommendation(reflectData, matches) {
   }
   const ids = new Set(matches.map((m) => m.incidentId));
   if (out && typeof out === "object" && Array.isArray(out.first_checks)) {
-    const claimed = String(out.matched_incident_id || "").trim();
-    // Only attribute the answer to memory Hindsight actually recalled.
-    const matchedId = out.similar_problem_found === true && ids.has(claimed) ? claimed : null;
+    // Only attribute the answer to memory Hindsight actually recalled. The model may wrap the id
+    // ("INC-1042 (checkout)", "mo-0928…", "Incident MO-…"), so find a recalled id inside what it returned.
+    const claimed = String(out.matched_incident_id || "").trim().toUpperCase();
+    const hit = claimed && [...ids].find((id) => id.toUpperCase() === claimed || claimed.includes(id.toUpperCase()));
+    const matchedId = out.similar_problem_found === true && hit ? hit : null;
     return {
       structured: true,
       memoryUsed: Boolean(matchedId),
@@ -343,12 +345,20 @@ export async function recallMatches(query) {
   return groupRecall(await recall(query));
 }
 
+function logAnalysis(matches, recommendation, evidence) {
+  if (process.env.MEMORYOPS_QUIET === "1") return;
+  const recalled = matches.map((m) => m.incidentId).slice(0, 5).join(", ") || "none";
+  const used = recommendation?.memoryUsed ? `used ${recommendation.matchedIncidentId}` : "no memory used (reflect judged none similar)";
+  console.log(`[analyze] recalled ${matches.length}: ${recalled} | ${used} | confidence ${evidence?.confidence?.level ?? "-"}`);
+}
+
 export async function analyzeIncident(incident) {
   const facts = normalizeQuery(incident);
   const context = normalizedContext(facts);
   const matches = await recallMatches(NORMALIZE_QUERY && context ? `${incident}\n${context}` : incident);
   const team = await teamKnowledge(facts);
   if (matches.length === 0) {
+    if (process.env.MEMORYOPS_QUIET !== "1") console.log("[analyze] recalled 0 memories from this bank");
     const evidence = analyzeEvidence({ incident, matches, patterns: team.patterns });
     return { ok: true, state: "no_experience", matches: [], evidence, team, recommendation: { structured: true, memoryUsed: false, matchedIncidentId: null, general: true, ...GENERAL_TROUBLESHOOTING } };
   }
@@ -378,6 +388,7 @@ export async function analyzeIncident(incident) {
     const hypothesis = evidence.hypotheses.find((h) => h.supporting_memories.some((s) => s.id === match?.incidentId)) || null;
     suggestedFix = suggestFix({ match, confidence: evidence.confidence.level, hypothesis });
   }
+  logAnalysis(matches, recommendation, evidence);
   return { ok: true, state: recommendation.memoryUsed ? "recommendation_ready" : "no_experience", matches, evidence, team, recommendation, suggestedFix };
 }
 
