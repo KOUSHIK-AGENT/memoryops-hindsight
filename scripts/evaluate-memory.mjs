@@ -5,15 +5,19 @@
 import fs from "node:fs";
 import { DATASET_PATH, EVAL_PATH, loadJson, validateEvalCase } from "../lib/dataset.mjs";
 import { parseArgs, loadMemoryApi, sleep } from "./cli.mjs";
+import { suppressFailedChecks } from "../lib/reasoning.mjs";
 
-const USAGE = "Usage: npm run memory:evaluate -- --bank <bank-id> [--k 3] [--recall-only] [--cases data/evaluation-cases.json] [--json out.json]";
+const USAGE = "Usage: npm run memory:evaluate -- --bank <bank-id> [--k 3] [--recall-only] [--normalize] [--cases data/evaluation-cases.json] [--json out.json]";
 const args = parseArgs(process.argv.slice(2));
 const K = Math.max(1, Number(args.k) || 3);
 const recallOnly = Boolean(args["recall-only"]);
+// A/B switch for query normalization (appends only explicitly present facts to the recall query).
+if (args.normalize) process.env.MEMORYOPS_NORMALIZE_QUERY = "1";
 
 const dataset = loadJson(DATASET_PATH);
 const cases = loadJson(typeof args.cases === "string" ? args.cases : EVAL_PATH);
 const ids = new Set(dataset.map((r) => r.incident_id));
+const categoryOf = Object.fromEntries(dataset.map((r) => [r.incident_id, r.category]));
 const invalid = cases.map((c) => [c.id, validateEvalCase(c, ids)]).filter(([, e]) => e.length);
 if (invalid.length) {
   for (const [id, e] of invalid) console.error(`${id}: ${e.join("; ")}`);
@@ -42,7 +46,16 @@ for (const c of cases) {
       r.state = a.state;
       r.memoryUsed = Boolean(a.recommendation?.memoryUsed);
       r.matched = a.recommendation?.matchedIncidentId ?? null;
-      if (a.reflectError) r.error = `reflect: ${a.reflectError.message}`;
+      r.confidence = a.evidence?.confidence?.level ?? null;
+      r.conflict = Boolean(a.evidence?.conflicts?.detected) || (a.evidence?.hypotheses?.length ?? 0) >= 2;
+      r.suppressed = a.recommendation?.suppressed?.length ?? 0;
+      // Negative experience: after MemoryOps' guard, no remaining check may repeat a known failed action.
+      r.failedPromoted = suppressFailedChecks(a.recommendation?.checks || [], a.evidence?.failedBefore || [], a.evidence?.workedBefore || []).suppressed.length;
+      // Provenance: everything cited must be something Hindsight actually recalled for this query.
+      const recalled = new Set(a.matches.map((m) => m.incidentId));
+      const cited = [r.matched, ...(a.evidence?.why?.supporting || []), ...(a.evidence?.hypotheses || []).flatMap((h) => h.supporting_memories.map((x) => x.id))].filter(Boolean);
+      r.provenanceOk = cited.every((id) => recalled.has(id));
+      if (a.reflectError) { r.error = `reflect: ${a.reflectError.message}`; r.reflectError = true; }
     }
   } catch (err) {
     r.error = err.message;
@@ -62,42 +75,69 @@ const topK = matchCases.filter((r) => inTop(r, K));
 const decided = (r) => r.memoryUsed && r.expected.includes(r.matched);
 const scoresAvailable = ok.some((r) => r.ranking.some((x) => Number.isFinite(x.score)));
 
-console.log("MEMORYOPS MEMORY EVALUATION");
-console.log(`Bank: ${BANK_ID}  (${stats.total_documents ?? "?"} documents, ${stats.total_nodes ?? "?"} facts)`);
-console.log(`Dataset: ${dataset.length} incidents   Held-out queries: ${cases.length}   Mode: ${recallOnly ? "recall only" : "recall + reflect (full app pipeline)"}\n`);
-console.log(`Top-1 expected retrieval:   ${top1.length} / ${matchCases.length}`);
-console.log(`Top-${K} expected retrieval:   ${topK.length} / ${matchCases.length}`);
-if (!recallOnly) {
-  const correctNo = noMatchCases.filter((r) => !r.memoryUsed);
-  const falseMatches = ok.filter((r) => r.memoryUsed && !r.expected.includes(r.matched));
-  const missed = matchCases.filter((r) => !r.memoryUsed);
-  console.log(`Memory used with a correct incident: ${matchCases.filter(decided).length} / ${matchCases.length}`);
-  console.log(`Correct no-match behaviour:  ${correctNo.length} / ${noMatchCases.length}`);
-  console.log(`False matches:               ${falseMatches.length}`);
-  console.log(`Missed matches (no memory used when one was expected): ${missed.length}`);
-} else {
-  console.log("No-match behaviour: not measured in --recall-only mode (recall always returns its nearest memories; the app's match decision is made by reflect).");
-}
-console.log(`Failed requests:             ${results.length - ok.length}`);
-console.log(`Similarity scores: ${scoresAvailable ? "Hindsight reranker scores shown below (0-1, from recall)" : "not returned by Hindsight; none shown"}\n`);
-
+const confident = (r) => r.confidence === "MEDIUM" || r.confidence === "HIGH";
 const fmt = (r) => r.ranking.slice(0, K).map((x) => `${x.id}${Number.isFinite(x.score) ? ` (${x.score.toFixed(2)})` : ""}`).join(", ") || "nothing";
+
+// Failure classes (a case can have several).
+function classify(r) {
+  if (r.error && !r.ranking) return ["REQUEST_FAILED"];
+  const out = [];
+  if (r.reflectError) out.push("REFLECT_ERROR");
+  if (r.should_match) {
+    if (!inTop(r, K)) out.push("RETRIEVAL_MISS");
+    else if (!inTop(r, 1)) out.push("BAD_RANKING");
+    if (!recallOnly && inTop(r, K) && !r.memoryUsed && !r.reflectError) out.push("BAD_ABSTENTION");
+    if (!recallOnly && r.memoryUsed && !r.expected.includes(r.matched)) out.push(categoryOf[r.matched] && categoryOf[r.matched] === categoryOf[r.expected[0]] ? "OVER_GENERIC_MEMORY" : "FALSE_POSITIVE");
+    if (!recallOnly && r.expected.length >= 2 && !r.conflict) out.push("CONFLICT_ERROR");
+  } else if (!recallOnly && (r.memoryUsed || confident(r))) out.push("FALSE_POSITIVE");
+  if (!recallOnly && r.failedPromoted) out.push("FAILED_ACTION_ERROR");
+  if (!recallOnly && r.provenanceOk === false) out.push("PROVENANCE_ERROR");
+  return out;
+}
+
+console.log("MEMORYOPS MEMORY QUALITY LAB: held-out evaluation");
+console.log(`Bank: ${BANK_ID}  (${stats.total_documents ?? "?"} documents, ${stats.total_nodes ?? "?"} facts)`);
+console.log(`Dataset: ${dataset.length} incidents   Held-out queries: ${cases.length}   Mode: ${recallOnly ? "recall only" : "recall + reflect + MemoryOps reasoning (full app pipeline)"}${args.normalize ? "   Query normalization: ON" : ""}\n`);
+console.log("RETRIEVAL");
+console.log(`  Top-1 expected:            ${top1.length} / ${matchCases.length}`);
+console.log(`  Top-${K} expected:            ${topK.length} / ${matchCases.length}`);
+if (!recallOnly) {
+  const correctNo = noMatchCases.filter((r) => !r.memoryUsed && !confident(r));
+  const falseConfident = noMatchCases.filter((r) => r.memoryUsed || confident(r));
+  const multi = matchCases.filter((r) => r.expected.length >= 2);
+  const withFailed = ok.filter((r) => r.failedPromoted !== undefined);
+  console.log("DECISION");
+  console.log(`  Memory used, correct incident: ${matchCases.filter(decided).length} / ${matchCases.length}`);
+  console.log(`  Wrong incident used:       ${matchCases.filter((r) => r.memoryUsed && !r.expected.includes(r.matched)).length}`);
+  console.log("ABSTENTION");
+  console.log(`  Correct no-match:          ${correctNo.length} / ${noMatchCases.length}`);
+  console.log(`  False confident match:     ${falseConfident.length}`);
+  console.log("PROVENANCE");
+  console.log(`  Citations all recalled:    ${ok.filter((r) => r.provenanceOk).length} / ${ok.length}`);
+  console.log("NEGATIVE EXPERIENCE");
+  console.log(`  Known failed fix promoted: ${withFailed.filter((r) => r.failedPromoted).length} / ${withFailed.length}   (reflect suggestions removed by the guard: ${ok.reduce((n, r) => n + (r.suppressed || 0), 0)})`);
+  console.log("CONFLICT HANDLING");
+  console.log(`  Disagreement surfaced:     ${multi.filter((r) => r.conflict).length} / ${multi.length}`);
+  console.log("CONFIDENCE LEVELS");
+  console.log(`  ${["HIGH", "MEDIUM", "LOW", "INSUFFICIENT"].map((l) => `${l}: ${ok.filter((r) => r.confidence === l).length}`).join("   ")}`);
+} else {
+  console.log("No-match / confidence / provenance: not measured in --recall-only mode.");
+}
+console.log(`Failed requests:             ${results.filter((r) => r.error && !r.ranking).length}`);
+console.log(`Similarity scores: ${scoresAvailable ? "Hindsight reranker scores shown (0-1, from recall)" : "not returned by Hindsight; none shown"}\n`);
+
+const classCounts = {};
 for (const r of results) {
-  let pass, reason;
-  if (r.error) { pass = false; reason = `request failed: ${r.error}`; }
-  else if (r.should_match) {
-    pass = inTop(r, K) && (recallOnly || decided(r));
-    reason = !inTop(r, K) ? `expected incident not in top ${K}` : !recallOnly && !r.memoryUsed ? "recalled, but reflect judged it not similar" : !recallOnly && !decided(r) ? `reflect chose ${r.matched}` : "";
+  const classes = classify(r);
+  for (const c of classes) classCounts[c] = (classCounts[c] || 0) + 1;
+  const hard = classes.filter((c) => c !== "BAD_RANKING");
+  if (hard.length) {
+    console.log(`FAIL ${r.id} [${r.type}] ${classes.join(", ")}\n  Query: "${r.query}"\n  Expected: ${r.expected.join(", ") || "no match"}\n  Retrieved: ${r.ranking ? fmt(r) : "-"}${recallOnly ? "" : `\n  Decision: ${r.memoryUsed ? `memory used (${r.matched})` : "no memory used"}; confidence ${r.confidence}${r.error ? `\n  Error: ${r.error}` : ""}`}\n`);
   } else {
-    pass = recallOnly ? true : !r.memoryUsed;
-    reason = pass ? "" : `false match: memory used from ${r.matched}`;
-  }
-  if (!pass) {
-    console.log(`FAIL ${r.id} [${r.type}]\n  Query: "${r.query}"\n  Expected: ${r.expected.join(", ") || "no match"}\n  Retrieved: ${fmt(r)}${recallOnly ? "" : `\n  Decision: ${r.memoryUsed ? `memory used (${r.matched})` : "no memory used"}`}\n  Reason: ${reason}\n`);
-  } else {
-    console.log(`PASS ${r.id} [${r.type}]  top: ${fmt(r)}${!recallOnly && r.memoryUsed ? `  -> used ${r.matched}` : ""}`);
+    console.log(`PASS ${r.id} [${r.type}]${classes.length ? ` (${classes.join(", ")})` : ""}  top: ${fmt(r)}${!recallOnly ? `  -> ${r.memoryUsed ? `used ${r.matched}` : "no memory"}, ${r.confidence}` : ""}`);
   }
 }
+console.log(`\nFailure classes: ${Object.keys(classCounts).length ? Object.entries(classCounts).map(([c, n]) => `${c}=${n}`).join("  ") : "none"}`);
 
 if (typeof args.json === "string") {
   fs.writeFileSync(args.json, JSON.stringify({ bank: BANK_ID, k: K, recallOnly, ranAt: new Date().toISOString(), results }, null, 2));

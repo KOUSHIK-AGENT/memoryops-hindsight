@@ -3,6 +3,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { DATASET_PATH, loadJson, validateDataset, incidentToRetainItem } from "./lib/dataset.mjs";
+import { parseFields, parseFeedback } from "./lib/memory-text.mjs";
+import { normalizeQuery, normalizedContext } from "./lib/signals.mjs";
+import { analyzeEvidence, applyObservations, suppressFailedChecks } from "./lib/reasoning.mjs";
+import { consolidate, patternToRetainItem, playbookToRetainItem, readPayload } from "./lib/patterns.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -17,6 +21,10 @@ const BANK_ID = process.env.HINDSIGHT_BANK_ID || "memoryops-demo";
 const TIMEOUT_OVERRIDE = Number(process.env.HINDSIGHT_TIMEOUT_MS) || 0;
 const TIMEOUTS = { status: 10000, retain: 120000, recall: 30000, reflect: 90000 };
 const MAX_TEXT = 4000;
+// Query normalization appends only explicitly present facts to the recall query. Off by default:
+// enable only if the held-out evaluation shows it helps (npm run memory:evaluate -- --normalize).
+const NORMALIZE_QUERY = process.env.MEMORYOPS_NORMALIZE_QUERY === "1";
+const AUTO_CONSOLIDATE = process.env.MEMORYOPS_AUTO_CONSOLIDATE !== "0";
 export const BANK_PATH = `/v1/default/banks/${encodeURIComponent(BANK_ID)}`;
 export { BANK_ID };
 
@@ -211,40 +219,6 @@ async function reflect(query) {
 
 // ---------- Response shaping ----------
 
-function parseFields(text) {
-  const pick = (label) => {
-    const m = text.match(new RegExp(`^${label.replace(/[()]/g, "\\$&")}:\\s*(.+)$`, "im"));
-    return m ? m[1].trim() : null;
-  };
-  const head = text.match(/^Past solved problem\s+(\S+)\s*\(([^)]+)\)/im);
-  return {
-    incidentId: head ? head[1] : null,
-    area: head ? head[2] : null,
-    title: pick("Title"),
-    status: pick("Status"),
-    happened: pick("What happened"),
-    cause: pick("Confirmed cause"),
-    suspectedCause: pick("Suspected cause (not confirmed)"),
-    attempted: pick("Tried but did NOT fix it"),
-    context: pick("Context"),
-    ruledOut: pick("Initially suspected but ruled out"),
-    partial: pick("Tried, helped only partially"),
-    verification: pick("Verification"),
-    worked: pick("What worked"),
-    outcome: pick("Outcome"),
-    lesson: pick("Lesson learned"),
-    technical: pick("Technical details"),
-    recordedAt: pick("Recorded at")
-  };
-}
-
-function parseFeedback(text) {
-  const about = text.match(/^Team feedback on past incident\s+(\S+)/im);
-  const verdict = text.match(/^Verdict:\s*(.+)$/im);
-  const problem = text.match(/^For problem:\s*(.+)$/im);
-  return about ? { about: about[1], verdict: verdict ? verdict[1].trim() : null, problem: problem ? problem[1].trim() : null } : null;
-}
-
 // Group recalled facts by the Hindsight document they came from, in recall rank order.
 export function groupRecall(data) {
   const chunks = data?.chunks && typeof data.chunks === "object" ? data.chunks : {};
@@ -266,6 +240,7 @@ export function groupRecall(data) {
   const feedback = [];
   const incidents = [];
   for (const d of docs.values()) {
+    if (/^memoryops-(pattern|playbook)-/.test(d.documentId || "")) continue; // team knowledge, fetched separately
     if (d.documentId?.startsWith("memoryops-feedback-")) {
       const fb = parseFeedback(sourceText(d));
       if (fb) feedback.push(fb);
@@ -341,6 +316,7 @@ function reflectPrompt(incident, matches) {
     "",
     `Past problems Hindsight recalled for this search: ${matches.map((m) => `${m.incidentId}${m.learned ? " (saved by the team after a real resolution)" : ""}`).join(", ") || "none"}.`,
     "",
+    "How to weigh evidence (highest first): human-confirmed successful outcome > human-confirmed failed attempt > team pattern backed by confirmed incidents > suspected cause > team feedback. Earlier AI recommendations are never evidence.",
     "How to weigh evidence:",
     "- Human-confirmed causes and fixes are authoritative. A 'Suspected cause (not confirmed)' is only a lead; say so if you use it.",
     "- Never recommend an action listed under 'Tried but did NOT fix it' as the main fix. Put it in avoid (e.g. 'Restarting the service alone did not fix this before'); otherwise avoid=\"\".",
@@ -367,18 +343,85 @@ export async function recallMatches(query) {
 }
 
 export async function analyzeIncident(incident) {
-  const matches = await recallMatches(incident);
+  const facts = normalizeQuery(incident);
+  const context = normalizedContext(facts);
+  const matches = await recallMatches(NORMALIZE_QUERY && context ? `${incident}\n${context}` : incident);
+  const team = await teamKnowledge(facts);
   if (matches.length === 0) {
-    return { ok: true, state: "no_experience", matches: [], recommendation: { structured: true, memoryUsed: false, matchedIncidentId: null, general: true, ...GENERAL_TROUBLESHOOTING } };
+    const evidence = analyzeEvidence({ incident, matches, patterns: team.patterns });
+    return { ok: true, state: "no_experience", matches: [], evidence, team, recommendation: { structured: true, memoryUsed: false, matchedIncidentId: null, general: true, ...GENERAL_TROUBLESHOOTING } };
   }
   let recommendation;
   try {
     recommendation = shapeRecommendation(await reflect(reflectPrompt(incident, matches)), matches);
   } catch (err) {
     // Recall worked; show what was recalled and report the reflect failure honestly.
-    return { ok: true, state: "match_found", matches, recommendation: null, reflectError: { message: err.message || "Reflect failed.", code: err.code || "reflect_failed" } };
+    const evidence = analyzeEvidence({ incident, matches, patterns: team.patterns });
+    return { ok: true, state: "match_found", matches, evidence, team, recommendation: null, reflectError: { message: err.message || "Reflect failed.", code: err.code || "reflect_failed" } };
   }
-  return { ok: true, state: recommendation.memoryUsed ? "recommendation_ready" : "no_experience", matches, recommendation };
+  const evidence = analyzeEvidence({
+    incident, matches, patterns: team.patterns,
+    reflectMatchedId: recommendation.memoryUsed ? recommendation.matchedIncidentId : null,
+    reflectJudgedNone: !recommendation.memoryUsed
+  });
+  if (Array.isArray(recommendation.checks)) {
+    // Negative experience: a known failed action is never presented as the fix.
+    const { checks, suppressed } = suppressFailedChecks(recommendation.checks, evidence.failedBefore, evidence.workedBefore);
+    recommendation.checks = checks;
+    recommendation.suppressed = suppressed;
+  }
+  return { ok: true, state: recommendation.memoryUsed ? "recommendation_ready" : "no_experience", matches, evidence, team, recommendation };
+}
+
+// Team patterns / playbook for today's situation (area + timing), read back from Hindsight.
+async function teamKnowledge(facts) {
+  const out = { patterns: [], playbook: null };
+  if (!facts.area || !facts.trigger) return out;
+  const key = `${facts.area}-${facts.trigger}`;
+  try {
+    const list = await hindsightFetch(`${BANK_PATH}/documents?q=${encodeURIComponent(`memoryops-pattern-${key}-`)}&limit=20`, { timeoutMs: TIMEOUTS.status });
+    for (const item of list.items || []) {
+      const doc = await hindsightFetch(`${BANK_PATH}/documents/${encodeURIComponent(item.id)}`, { timeoutMs: TIMEOUTS.status });
+      const p = readPayload(doc);
+      if (p) out.patterns.push(p);
+    }
+    out.playbook = readPayload(await hindsightFetch(`${BANK_PATH}/documents/${encodeURIComponent(`memoryops-playbook-${key}`)}`, { timeoutMs: TIMEOUTS.status }));
+  } catch {
+    // Missing bank/doc or an error: show no team knowledge rather than guessing.
+  }
+  return out;
+}
+
+// Read every confirmed incident document and upsert TEAM_PATTERN / PLAYBOOK memories.
+// Stable ids + unchanged-content skip => updates, never duplicates. Incidents are never modified or deleted.
+export async function consolidateMemory() {
+  const ids = [];
+  for (let offset = 0; ; offset += 100) {
+    const page = await hindsightFetch(`${BANK_PATH}/documents?q=memoryops-&limit=100&offset=${offset}`, { timeoutMs: TIMEOUTS.status });
+    const items = page.items || [];
+    ids.push(...items.map((i) => i.id).filter((id) => /^memoryops-(INC|MO)-/.test(id)));
+    if (items.length < 100) break;
+  }
+  const docs = [];
+  for (let i = 0; i < ids.length; i += 8) {
+    const batch = await Promise.all(ids.slice(i, i + 8).map((id) => hindsightFetch(`${BANK_PATH}/documents/${encodeURIComponent(id)}`, { timeoutMs: TIMEOUTS.status })));
+    batch.forEach((d, k) => docs.push({ documentId: ids[i + k], text: d.original_text || "" }));
+  }
+  const result = consolidate(docs);
+  const items = [...result.patterns.map(patternToRetainItem), ...result.playbooks.map(playbookToRetainItem)];
+  const changes = [];
+  for (const item of items) {
+    let status = "created";
+    try {
+      const existing = await hindsightFetch(`${BANK_PATH}/documents/${encodeURIComponent(item.document_id)}`, { timeoutMs: TIMEOUTS.status });
+      status = existing.original_text === item.content ? "unchanged" : "updated";
+    } catch (err) {
+      if (err.code !== "hindsight_not_found") throw err;
+    }
+    if (status !== "unchanged") await retain([item]);
+    changes.push({ id: item.document_id.replace(/^memoryops-/, ""), type: item.metadata.memoryops_type, status });
+  }
+  return { incidentsRead: docs.length, confirmedIncidents: result.incidents, patterns: result.patterns, playbooks: result.playbooks, changes };
 }
 
 // Exact per-kind document counts via GET /documents?q=<id prefix> (the response's total).
@@ -390,6 +433,51 @@ async function countDocuments(prefix) {
     return null;
   }
 }
+
+export async function resolveIncident(body) {
+  // Only a human-confirmed outcome enters memory. AI recommendations are never retained.
+  if (body.confirmed !== true) {
+    throw new ApiError(400, "not_confirmed", "Confirm that this is what actually happened before saving it as experience.");
+  }
+  const incident = requiredText(body, "incident", "The problem description");
+  const worked = typeof body.worked === "string" ? requiredText(body, "worked", "What actually fixed the problem") : requiredText(body, "resolution", "What actually fixed the problem");
+  const cause = optionalText(body, "cause");
+  const attempted = optionalText(body, "attempted");
+  const outcome = optionalText(body, "outcome");
+  const lesson = optionalText(body, "lesson");
+  const area = optionalText(body, "area", 60).replace(/[()\n]/g, " ") || "Saved from MemoryOps";
+  const causeConfirmed = body.causeConfirmed === true;
+  // Session observations become memory only now, as part of a human-confirmed outcome.
+  const observations = Array.isArray(body.observations) ? body.observations.filter((o) => typeof o === "string" && o.trim()).slice(0, 10).map((o) => o.trim().slice(0, 300)) : [];
+
+  const now = new Date();
+  // Unique per save (timestamp + random suffix) so no earlier experience is ever replaced.
+  const id = `MO-${now.toISOString().slice(5, 16).replace(/\D/g, "")}-${Math.random().toString(36).slice(2, 5).toUpperCase().padEnd(3, "0")}`;
+  const title = incident.split(/(?<=[.!?])\s/)[0].slice(0, 160);
+  const result = await retain([{
+    content: [
+      `Past solved problem ${id} (${area})`,
+      `Title: ${title}`,
+      "Status: Human-confirmed resolution (saved by the team after the problem was fixed)",
+      `What happened: ${incident}`,
+      cause && (causeConfirmed ? `Confirmed cause: ${cause}` : `Suspected cause (not confirmed): ${cause}`),
+      attempted && `Tried but did NOT fix it: ${attempted}`,
+      `What worked: ${worked}`,
+      outcome && `Outcome: ${outcome}`,
+      observations.length && `Observations during diagnosis: ${observations.join("; ")}`,
+      lesson && `Lesson learned: ${lesson}`,
+      `Recorded at: ${now.toISOString()}`
+    ].filter(Boolean).join("\n"),
+    context: `Human-confirmed resolution ${id} saved by the team in MemoryOps`,
+    timestamp: now.toISOString(),
+    // A new document per resolution: earlier experience is never overwritten.
+    document_id: `memoryops-${id}`,
+    metadata: { memoryops_id: id, source: "memoryops-resolution", verification: "human-confirmed", cause_status: cause ? (causeConfirmed ? "confirmed" : "suspected") : "unknown" }
+  }]);
+  return { ok: true, id, stored: result.items_count ?? 1, causeStatus: cause ? (causeConfirmed ? "confirmed" : "suspected") : "unknown" };
+}
+
+
 
 // ---------- Routes ----------
 
@@ -408,8 +496,8 @@ async function api(req, res, url) {
         facts: Number.isFinite(stats.total_nodes) ? stats.total_nodes : null,
         pendingOperations: Number.isFinite(stats.pending_operations) ? stats.pending_operations : 0
       });
-      const [historical, learned, feedback] = await Promise.all(["memoryops-INC-", "memoryops-MO-", "memoryops-feedback-"].map(countDocuments));
-      status.counts = { historical, learned, feedback };
+      const [historical, learned, feedback, patterns, playbooks] = await Promise.all(["memoryops-INC-", "memoryops-MO-", "memoryops-feedback-", "memoryops-pattern-", "memoryops-playbook-"].map(countDocuments));
+      status.counts = { historical, learned, feedback, patterns, playbooks };
     } catch (err) {
       if (err.code === "hindsight_not_found") Object.assign(status, { connected: true, documents: 0, facts: 0 });
       else Object.assign(status, { error: err.message, code: err.code });
@@ -435,44 +523,35 @@ async function api(req, res, url) {
   }
 
   if (req.method === "POST" && url.pathname === "/api/resolve") {
-    const body = await readJson(req);
-    // Only a human-confirmed outcome enters memory. AI recommendations are never retained.
-    if (body.confirmed !== true) {
-      throw new ApiError(400, "not_confirmed", "Confirm that this is what actually happened before saving it as experience.");
+    const saved = await resolveIncident(await readJson(req));
+    let consolidation = null;
+    if (AUTO_CONSOLIDATE) {
+      try {
+        const c = await consolidateMemory();
+        consolidation = { changes: c.changes, patterns: c.patterns.map((p) => ({ id: p.pattern_id, statement: p.statement, supporting: p.supporting_incidents.length })) };
+      } catch (err) {
+        consolidation = { error: err.message };
+      }
     }
-    const incident = requiredText(body, "incident", "The problem description");
-    const worked = typeof body.worked === "string" ? requiredText(body, "worked", "What actually fixed the problem") : requiredText(body, "resolution", "What actually fixed the problem");
-    const cause = optionalText(body, "cause");
-    const attempted = optionalText(body, "attempted");
-    const outcome = optionalText(body, "outcome");
-    const lesson = optionalText(body, "lesson");
-    const area = optionalText(body, "area", 60).replace(/[()\n]/g, " ") || "Saved from MemoryOps";
-    const causeConfirmed = body.causeConfirmed === true;
+    return send(res, 200, { ...saved, consolidation });
+  }
 
-    const now = new Date();
-    // Unique per save (timestamp + random suffix) so no earlier experience is ever replaced.
-    const id = `MO-${now.toISOString().slice(5, 16).replace(/\D/g, "")}-${Math.random().toString(36).slice(2, 5).toUpperCase().padEnd(3, "0")}`;
-    const title = incident.split(/(?<=[.!?])\s/)[0].slice(0, 160);
-    const result = await retain([{
-      content: [
-        `Past solved problem ${id} (${area})`,
-        `Title: ${title}`,
-        "Status: Human-confirmed resolution (saved by the team after the problem was fixed)",
-        `What happened: ${incident}`,
-        cause && (causeConfirmed ? `Confirmed cause: ${cause}` : `Suspected cause (not confirmed): ${cause}`),
-        attempted && `Tried but did NOT fix it: ${attempted}`,
-        `What worked: ${worked}`,
-        outcome && `Outcome: ${outcome}`,
-        lesson && `Lesson learned: ${lesson}`,
-        `Recorded at: ${now.toISOString()}`
-      ].filter(Boolean).join("\n"),
-      context: `Human-confirmed resolution ${id} saved by the team in MemoryOps`,
-      timestamp: now.toISOString(),
-      // A new document per resolution: earlier experience is never overwritten.
-      document_id: `memoryops-${id}`,
-      metadata: { memoryops_id: id, source: "memoryops-resolution", verification: "human-confirmed", cause_status: cause ? (causeConfirmed ? "confirmed" : "suspected") : "unknown" }
-    }]);
-    return send(res, 200, { ok: true, id, stored: result.items_count ?? 1, causeStatus: cause ? (causeConfirmed ? "confirmed" : "suspected") : "unknown" });
+  if (req.method === "POST" && url.pathname === "/api/consolidate") {
+    const c = await consolidateMemory();
+    return send(res, 200, { ok: true, ...c });
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/diagnose") {
+    // Session evidence only: nothing here is retained.
+    const body = await readJson(req);
+    if (!Array.isArray(body.hypotheses) || body.hypotheses.length > 3) throw new ApiError(400, "validation", "hypotheses must be a list of up to 3.");
+    if (!Array.isArray(body.observations) || body.observations.length > 20 || body.observations.some((o) => typeof o !== "string" || o.length > 500)) {
+      throw new ApiError(400, "validation", "observations must be a list of short strings.");
+    }
+    for (const h of body.hypotheses) {
+      if (!h || typeof h.id !== "string" || !Array.isArray(h.keywords)) throw new ApiError(400, "validation", "Malformed hypothesis.");
+    }
+    return send(res, 200, { ok: true, retained: false, ...applyObservations(body.hypotheses, body.observations) });
   }
 
   if (req.method === "POST" && url.pathname === "/api/feedback") {

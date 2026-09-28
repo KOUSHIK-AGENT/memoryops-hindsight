@@ -68,7 +68,7 @@ On Windows PowerShell, run `Copy-Item .env.example .env` and then `notepad .env`
 ## Test it
 
 ```bash
-npm test          # 29 tests (server, dataset, ingestion) against fake Hindsight; never touches your account
+npm test          # 44 tests (server, dataset, ingestion, reasoning) against fake Hindsight; never touches your account
 npm run smoke     # the 7 learning-loop acceptance checks against your REAL bank (server must be running)
                   # (same as npm run memory:smoke)
 ```
@@ -133,15 +133,42 @@ HINDSIGHT_BANK_ID=memoryops-final-demo-0928
 
 Restart `npm start`. The header should show **Hindsight connected ✓**, and the Knowledge Bank should show **Memory is empty**. A bank that doesn't exist yet counts as empty, and Hindsight creates it on the first retain.
 
-## Exact demo: three rounds (about 3 minutes, fresh bank)
+## Diagnostic intelligence
 
-The **Demo problems** buttons (Round 1 / Round 2 · reworded / Unrelated) fill in both the problem and the outcome a person would confirm.
+MemoryOps does more than find a similar incident. Everything below is **deterministic application logic** over what Hindsight actually recalled (`lib/signals.mjs`, `lib/reasoning.mjs`, `lib/patterns.mjs`). No confidence number is invented, and none of it is LLM retraining.
 
-1. **Round 1: before.** Click **Analyze problem**. You get *No similar solved problem was found* and general troubleshooting. The log shows "0 relevant memories recalled".
-2. **Human fixes it.** In Step 4 the fields show the confirmed cause (30 → 5), what did not work (restarting only), and what worked. Tick **I confirm this is what actually happened**, then click **Save verified experience**. You see **✓ Experience learned**.
-3. **Round 2: reworded.** Click **Round 2 · reworded**, then **Analyze problem**. Hindsight recalls the Round 1 resolution, marked "Learned from a previous resolved incident". You see the confirmed cause, what worked, and "Already tried before, did NOT fix it". Click **Helpful**.
-4. **Round 3: accumulate.** Confirm and save the Round 2 outcome, which has a different cause (a configuration template). The memory count grows, and the log shows experience building up.
-5. **Unrelated.** Click **Unrelated**, then **Analyze problem**. MemoryOps does not reuse the checkout experience.
+- **Typed memory, weighted by authority:** human-confirmed successful outcome > human-confirmed failed attempt > team pattern backed by confirmed incidents > suspected cause > feedback hint. AI recommendations are never stored as evidence.
+- **Confidence and abstention (`HIGH`, `MEDIUM`, `LOW`, `INSUFFICIENT`):** the level comes from how many recalled, *confirmed* incidents share today's explicitly stated facts (area, timing, symptoms). It is capped when causes conflict, when reflect finds nothing similar, when today's description contradicts the remembered cause, or when the team marked the memory "Not relevant". At `LOW` or `INSUFFICIENT` it says: *"MemoryOps does not have enough historical evidence for a confident memory-based recommendation."*
+- **Multiple memories and conflicts:** up to 3 hypotheses, grouped by confirmed cause. If equally good matches had different causes, the UI shows *Conflicting history* instead of picking one.
+- **Next best check:** each hypothesis carries its supporting memories, a next check (taken from the remembered lesson), and what you'd expect to see if it's true. You type what you observed (*"Current pool is 5. Previous version was 30."*) and the hypotheses update (`/api/diagnose`). Observations are **session evidence only**; they are saved only as part of a confirmed outcome.
+- **Negative experience:** failed attempts are listed as *Previously tried, did NOT work*, and a guard removes any suggested check that just repeats a known failed action.
+- **Why this recommendation?** Only facts that were actually shared or counted appear here, with the supporting incident IDs.
+- **Team patterns (level-2 learning):** after each confirmed save, MemoryOps reads the confirmed incidents and creates or updates a `TEAM_PATTERN`. This needs **at least 3 independently confirmed incidents** with the same cause in the same situation (area plus timing); suspected causes don't count. Counterexamples are kept in the statement, for example *"…has been a recurring cause…, but similar symptoms have also come from certificate problems"*. Each pattern has a stable ID, so it is updated rather than duplicated, and incidents are never deleted.
+- **Team playbook:** generated once a pattern exists. There is one step per confirmed cause in that situation, and each step shows *why this check exists* and which incidents support it. It is guidance only; a person runs every step.
+- **Query normalization:** `normalizeQuery()` extracts explicit facts only. Adding them to the recall query is **off by default** and can be A/B tested with `npm run memory:evaluate -- --normalize`.
+
+### Memory Quality Lab
+
+```bash
+npm run memory:seed     -- --bank memoryops-advanced-eval-v1
+npm run memory:evaluate -- --bank memoryops-advanced-eval-v1 --json baseline.json            # frozen 20 cases
+npm run memory:evaluate -- --bank memoryops-advanced-eval-v1 --normalize --json norm.json    # A/B
+npm run memory:seed     -- --bank memoryops-lab-v1
+npm run memory:lab      -- --bank memoryops-lab-v1        # WRITES test resolutions; use a dedicated bank
+npm run memory:consolidate -- --bank <bank>              # show / update team patterns and playbooks
+```
+
+`memory:evaluate` reports RETRIEVAL (top-1, top-K), DECISION, ABSTENTION (correct no-match, false confident match), PROVENANCE, NEGATIVE EXPERIENCE, CONFLICT HANDLING and the spread of confidence levels. It then classifies every failure as `RETRIEVAL_MISS`, `BAD_RANKING`, `FALSE_POSITIVE`, `OVER_GENERIC_MEMORY`, `CONFLICT_ERROR`, `BAD_ABSTENTION`, `FAILED_ACTION_ERROR`, `PROVENANCE_ERROR` or `REFLECT_ERROR`. There is no combined "AI score". `memory:lab` checks pattern thresholds, counterexamples, playbook provenance, duplicate-safe consolidation, self-learning from different wording, negative experience and abstention against real Hindsight.
+
+## Exact demo: five rounds (about 3 minutes, fresh bank)
+
+The **Demo problems** buttons fill in both the problem and the outcome a person would confirm. The observation field suggests what a person would report.
+
+1. **Round 1: no history.** Click **Analyze problem**. Confidence is **INSUFFICIENT** and you get general troubleshooting. Record the observation *"Current pool is 5. Previous version was 30."*, tick **I confirm…**, then click **Save verified experience** to see **✓ Experience learned**.
+2. **Round 2: reworded.** Hindsight recalls Round 1 (*Learned from a previous resolved incident*). You see what worked, *Previously tried, did NOT work* (restart only), *Why this recommendation?* and the **Next best check**. Record the observation, and the hypothesis becomes *supported*. Confirm and save.
+3. **Round 3: another confirmed incident.** Analyze, then confirm and save. That makes 3 confirmed connection-limit incidents, so the log shows **Team has learned**, and a **Team playbook** is created.
+4. **Round 4: same symptoms, different cause.** Today's text says the database looks healthy, so the remembered cause is *weakened* and confidence drops. The team pattern is shown, but it doesn't override the evidence. Record *"Connection pool is 30 as usual. Logs show the tax service certificate has expired."*: the next best check then says to investigate beyond memory. Confirm the certificate cause. The pattern updates to name the exception, and analyzing again shows **Conflicting history**.
+5. **Unrelated.** Click **Unrelated**, then **Analyze problem**. MemoryOps abstains.
 
 *Load past solved incidents* is optional: it adds 3 incidents from the dataset.
 
@@ -152,6 +179,8 @@ The **Demo problems** buttons (Round 1 / Round 2 · reworded / Unrelated) fill i
 
 ## Limitations
 
+- Confidence, relevance, hypotheses and patterns come from a deterministic English keyword lexicon (`lib/signals.mjs`). Unusual wording can be missed; when that happens, MemoryOps under-claims (it abstains) rather than over-claims.
+- Consolidation reads every incident document after each confirmed save (one `GET` per document). That is fine for hundreds of documents but not tuned for large banks.
 - The 50-incident corpus is synthetic. Retrieval quality on it says nothing about real-world incident data, and 20 evaluation cases is a small sample.
 - The sample history is deterministic demo data. Recall and reflect results come from Hindsight, so the exact wording (and occasionally the match judgement) varies from run to run.
 - A single shared memory bank. There is no login, no multi-tenancy, and no deletion of memories from the UI.

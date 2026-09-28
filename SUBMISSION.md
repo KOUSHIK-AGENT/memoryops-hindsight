@@ -10,6 +10,9 @@ Every time the team solves a problem, MemoryOps remembers what actually worked. 
 
 The self-learning loop: recall similar resolved incidents → recommend what to check → a person verifies, acts, and confirms the outcome → the **verified** outcome is retained in Hindsight, including what did *not* work → the next similar problem recalls it. MemoryOps becomes more useful as verified incident experience accumulates. It does not claim that the model retrains itself.
 
+## Diagnostic intelligence
+MemoryOps doesn't just search old incidents. It remembers verified outcomes, knows what failed before, combines evidence from several incidents, detects conflicting historical causes, and guides the engineer through the next best diagnostic check. It learns recurring team patterns (only from at least 3 confirmed incidents, keeping exceptions), turns them into evidence-backed playbooks, and abstains when memory is insufficient. Confidence levels (HIGH/MEDIUM/LOW/INSUFFICIENT) are deterministic and based on evidence; no percentages are invented. Only human-confirmed outcomes become long-term knowledge; observations made during diagnosis stay session-only until a person confirms the outcome.
+
 ## Memory dataset (bootstrap)
 MemoryOps is not fine-tuning the underlying language model. It bootstraps Hindsight with 50 synthetic, confirmed-resolved incidents across 10 categories. They include failed attempts, suspicions that were ruled out, and deliberate conflicts (the same symptoms with different causes). It then keeps learning from human-confirmed resolutions. Ingestion is duplicate-safe (stable document IDs, and unchanged records are skipped). A held-out set of 20 evaluation cases measures real Hindsight retrieval (`npm run memory:evaluate`). No accuracy figures are claimed here until that has been run against a real bank.
 
@@ -36,7 +39,7 @@ Browser (vanilla HTML/CSS/JS) → MemoryOps Node API (`server.mjs`, zero depende
 - Timeouts on every Hindsight call, clear error mapping (401/404/429/5xx/timeout/malformed), and protection against concurrent seeding.
 - The API key stays server-side and is redacted from any error text.
 - Guardrails against reinforcing its own mistakes: only confirmed outcomes are learned, confirmed and suspected causes are kept apart, attempts that worked are kept apart from ones that failed, and nothing is overwritten.
-- 29 automated tests against a fake Hindsight server (`npm test`), plus `npm run smoke`, which runs the 7 learning-loop acceptance checks against a real bank.
+- 44 automated tests against a fake Hindsight server (`npm test`), plus `npm run smoke`, which runs the 7 learning-loop acceptance checks against a real bank.
 
 ## Real-world value
 Getting to a useful first step faster on repeat problems, and keeping team knowledge when people move on. These are the intended benefits. We have **not** measured them. The UI shows only factual progress, such as "0 relevant memories recalled" followed by "1 relevant resolved incident recalled". Possible future metrics: verified resolutions stored, usefulness feedback, and time to resolve repeat incidents.
