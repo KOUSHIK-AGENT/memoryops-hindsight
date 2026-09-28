@@ -1,0 +1,6280 @@
+{
+ "pack_id": "memoryops-troubleshooting-v1",
+ "title": "MemoryOps curated troubleshooting pack",
+ "version": 1,
+ "provenance": "Original summaries of widely documented operational behaviour, written for MemoryOps. Not copied from any source. 'references' point to official documentation for verification.",
+ "trust_level": "SYNTHETIC",
+ "source_type": "CURATED_KNOWLEDGE",
+ "entries": [
+  {
+   "id": "KB-HTTP-001",
+   "technology": "http",
+   "category": "http-5xx",
+   "title": "502 Bad Gateway from a reverse proxy or load balancer",
+   "symptoms": [
+    "users see 502 bad gateway",
+    "proxy logs upstream connect error or upstream prematurely closed",
+    "errors started suddenly across many endpoints"
+   ],
+   "likely_causes": [
+    "upstream application instances crashed or are restarting",
+    "upstream listening on a different port or address than the proxy expects",
+    "upstream closing keep-alive connections before the proxy does"
+   ],
+   "diagnostic_checks": [
+    "check whether upstream instances are running and passing health checks",
+    "compare the upstream address and port in proxy config with what the app listens on",
+    "check proxy error log for connect refused versus reset by peer"
+   ],
+   "confirming_signals": [
+    "proxy error log shows connection refused or reset",
+    "upstream instance count dropped"
+   ],
+   "disconfirming_signals": [
+    "upstream is healthy and its own logs show the requests completing"
+   ],
+   "common_failed_actions": [
+    "restarting the proxy alone",
+    "increasing proxy timeouts when the upstream is actually down"
+   ],
+   "safe_remediation_guidance": [
+    "restore upstream health first",
+    "align upstream address and port",
+    "set proxy keep-alive timeout lower than upstream idle timeout"
+   ],
+   "warnings": [
+    "a 502 is reported by the proxy, the fault is usually behind it"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "rfc-http",
+     "nginx-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-HTTP-002",
+   "technology": "http",
+   "category": "http-5xx",
+   "title": "503 Service Unavailable during traffic or deploys",
+   "symptoms": [
+    "503 service unavailable responses",
+    "errors during rollouts or traffic peaks",
+    "no healthy upstream messages"
+   ],
+   "likely_causes": [
+    "no ready instances behind the service or load balancer",
+    "readiness checks failing after deploy",
+    "instances overloaded and shedding load"
+   ],
+   "diagnostic_checks": [
+    "count ready instances and endpoints behind the service",
+    "check readiness probe results during the rollout",
+    "check whether errors align with deploy or traffic peaks"
+   ],
+   "confirming_signals": [
+    "endpoint list empty or shrinking",
+    "readiness failures in events"
+   ],
+   "disconfirming_signals": [
+    "plenty of ready endpoints and low load while 503 continues"
+   ],
+   "common_failed_actions": [
+    "scaling out when instances fail readiness for a config reason"
+   ],
+   "safe_remediation_guidance": [
+    "fix the readiness failure cause",
+    "use rolling updates with max unavailable low enough to keep capacity"
+   ],
+   "warnings": [
+    "503 with Retry-After can be intentional load shedding"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "rfc-http",
+     "kubernetes-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-HTTP-003",
+   "technology": "http",
+   "category": "timeouts",
+   "title": "504 Gateway Timeout from proxy",
+   "symptoms": [
+    "504 gateway timeout",
+    "requests take exactly the proxy timeout before failing",
+    "slow endpoints fail first"
+   ],
+   "likely_causes": [
+    "upstream slower than the proxy read timeout",
+    "a dependency of the upstream (database, external API) is slow",
+    "thread or worker pool exhaustion upstream"
+   ],
+   "diagnostic_checks": [
+    "compare request duration histogram with the proxy timeout value",
+    "trace a slow request to find which dependency consumes the time",
+    "check upstream worker utilisation"
+   ],
+   "confirming_signals": [
+    "durations cluster exactly at the timeout",
+    "a dependency span dominates the trace"
+   ],
+   "disconfirming_signals": [
+    "upstream finishes quickly but the proxy still times out (look at network path instead)"
+   ],
+   "common_failed_actions": [
+    "raising the proxy timeout without finding the slow dependency"
+   ],
+   "safe_remediation_guidance": [
+    "fix or bound the slow dependency with its own timeout",
+    "only then tune proxy timeouts"
+   ],
+   "warnings": [
+    "longer timeouts can hold more connections open and worsen overload"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "rfc-http",
+     "nginx-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-HTTP-004",
+   "technology": "http",
+   "category": "http-5xx",
+   "title": "500 errors immediately after a deployment",
+   "symptoms": [
+    "500 internal server error rate rises right after release",
+    "stack traces reference new code paths",
+    "only some endpoints affected"
+   ],
+   "likely_causes": [
+    "code regression in the new release",
+    "missing or renamed configuration value",
+    "incompatible database schema or migration"
+   ],
+   "diagnostic_checks": [
+    "diff the release (code and config) against the previous version",
+    "group errors by endpoint and exception type",
+    "check migration status"
+   ],
+   "confirming_signals": [
+    "errors started at the deploy timestamp",
+    "exceptions point to changed code or missing config"
+   ],
+   "disconfirming_signals": [
+    "error rate unchanged by deploy timing",
+    "same errors on the previous version"
+   ],
+   "common_failed_actions": [
+    "restarting instances of the new version"
+   ],
+   "safe_remediation_guidance": [
+    "roll back or feature-flag off the change",
+    "fix the regression forward with a test"
+   ],
+   "warnings": [
+    "rolling back code does not undo an irreversible migration"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "rfc-http"
+    ]
+   }
+  },
+  {
+   "id": "KB-HTTP-005",
+   "technology": "http",
+   "category": "rate-limiting",
+   "title": "429 Too Many Requests from an API",
+   "symptoms": [
+    "429 too many requests",
+    "retry-after headers present",
+    "bursts of failures at the top of the minute"
+   ],
+   "likely_causes": [
+    "client exceeded provider or gateway rate limit",
+    "retries multiplying traffic",
+    "a shared key or IP used by many clients"
+   ],
+   "diagnostic_checks": [
+    "count request rate per key or IP against the documented limit",
+    "check whether retries honour Retry-After",
+    "check for a new caller sharing the credentials"
+   ],
+   "confirming_signals": [
+    "request rate above limit",
+    "retries without backoff"
+   ],
+   "disconfirming_signals": [
+    "rate far below limit (check which limit applies)"
+   ],
+   "common_failed_actions": [
+    "retrying immediately in a loop"
+   ],
+   "safe_remediation_guidance": [
+    "add exponential backoff with jitter honouring Retry-After",
+    "spread load or request a higher quota"
+   ],
+   "warnings": [
+    "aggressive retries turn a small limit breach into an outage"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "rfc-http"
+    ]
+   }
+  },
+  {
+   "id": "KB-HTTP-006",
+   "technology": "http",
+   "category": "auth",
+   "title": "Sudden spike of 401 Unauthorized",
+   "symptoms": [
+    "many requests return 401 unauthorized",
+    "users logged out",
+    "service-to-service calls rejected"
+   ],
+   "likely_causes": [
+    "credential or signing key rotated and not propagated",
+    "tokens expired because refresh fails",
+    "clock skew makes valid tokens look expired"
+   ],
+   "diagnostic_checks": [
+    "check recent credential or key rotations",
+    "decode a failing token and compare exp, nbf and kid with the verifier",
+    "compare server clocks"
+   ],
+   "confirming_signals": [
+    "failures began at a rotation time",
+    "kid in token unknown to verifier"
+   ],
+   "disconfirming_signals": [
+    "tokens valid and clocks in sync"
+   ],
+   "common_failed_actions": [
+    "asking users to log in again repeatedly"
+   ],
+   "safe_remediation_guidance": [
+    "distribute the new key or credential to every consumer",
+    "allow overlap of old and new keys during rotation"
+   ],
+   "warnings": [
+    "never log full tokens while debugging"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "rfc-http",
+     "rfc-oauth"
+    ]
+   }
+  },
+  {
+   "id": "KB-HTTP-007",
+   "technology": "http",
+   "category": "auth",
+   "title": "403 Forbidden after a permission or policy change",
+   "symptoms": [
+    "403 forbidden responses",
+    "access denied messages",
+    "only some users or services affected"
+   ],
+   "likely_causes": [
+    "role or policy changed or removed",
+    "resource moved to a scope without grants",
+    "new security rule blocking a path"
+   ],
+   "diagnostic_checks": [
+    "identify the principal making the failing request",
+    "list its effective permissions",
+    "compare policies with the last working version"
+   ],
+   "confirming_signals": [
+    "missing permission in effective policy",
+    "recent policy change"
+   ],
+   "disconfirming_signals": [
+    "principal has the permission and the resource policy allows it"
+   ],
+   "common_failed_actions": [
+    "granting broad admin rights to make it work"
+   ],
+   "safe_remediation_guidance": [
+    "restore the specific missing permission with least privilege"
+   ],
+   "warnings": [
+    "broad grants made during incidents are often never removed"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "rfc-http",
+     "cloud-provider-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-HTTP-008",
+   "technology": "http",
+   "category": "http-4xx",
+   "title": "404 Not Found after routing or deploy change",
+   "symptoms": [
+    "404 not found for endpoints that used to work",
+    "only new or moved routes affected",
+    "static assets missing"
+   ],
+   "likely_causes": [
+    "route prefix or base path changed",
+    "proxy path rewrite changed",
+    "build did not include assets"
+   ],
+   "diagnostic_checks": [
+    "request the path directly on an instance bypassing the proxy",
+    "compare proxy rewrite rules with the previous version",
+    "list deployed assets"
+   ],
+   "confirming_signals": [
+    "path works directly but not through proxy",
+    "missing files in the artifact"
+   ],
+   "disconfirming_signals": [
+    "path 404s everywhere including old version"
+   ],
+   "common_failed_actions": [
+    "clearing browser caches"
+   ],
+   "safe_remediation_guidance": [
+    "restore the path mapping or rewrite",
+    "add a route smoke test to the pipeline"
+   ],
+   "warnings": [
+    "404 caching at a CDN can outlive the fix"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "rfc-http",
+     "nginx-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-HTTP-009",
+   "technology": "http",
+   "category": "http-4xx",
+   "title": "413 Payload Too Large on uploads",
+   "symptoms": [
+    "413 request entity too large",
+    "large uploads fail while small ones work",
+    "failures after moving behind a new proxy"
+   ],
+   "likely_causes": [
+    "proxy or gateway body size limit lower than the application limit",
+    "new ingress default limit"
+   ],
+   "diagnostic_checks": [
+    "find the smallest failing request size",
+    "check body size limits at each hop (CDN, load balancer, proxy, app)"
+   ],
+   "confirming_signals": [
+    "failures begin exactly above a size threshold"
+   ],
+   "disconfirming_signals": [
+    "failures occur for small bodies too"
+   ],
+   "common_failed_actions": [
+    "raising the application limit only"
+   ],
+   "safe_remediation_guidance": [
+    "align body size limits at every hop to the intended maximum"
+   ],
+   "warnings": [
+    "very large limits expose the service to memory pressure"
+   ],
+   "example_fix": {
+    "label": "GENERAL EXAMPLE",
+    "diff": "- PROXY_MAX_BODY_SIZE=<current limit>\n+ PROXY_MAX_BODY_SIZE=<intended maximum upload size>",
+    "placeholders": true
+   },
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "rfc-http",
+     "nginx-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-HTTP-010",
+   "technology": "http",
+   "category": "http-4xx",
+   "title": "431 Request Header Fields Too Large",
+   "symptoms": [
+    "431 or 400 request header too large",
+    "only some clients or users with many cookies fail",
+    "requests never reach the app"
+   ],
+   "likely_causes": [
+    "cookies or tokens grew beyond the header limit",
+    "new client adds large headers"
+   ],
+   "diagnostic_checks": [
+    "measure header size of failing requests",
+    "check header buffer limits at gateway and proxy"
+   ],
+   "confirming_signals": [
+    "failing requests have much larger cookie or authorization headers"
+   ],
+   "disconfirming_signals": [
+    "header sizes are normal"
+   ],
+   "common_failed_actions": [
+    "scaling the application"
+   ],
+   "safe_remediation_guidance": [
+    "shrink cookies or tokens",
+    "raise header buffer limits moderately"
+   ],
+   "warnings": [
+    "raising limits hides unbounded cookie growth"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "rfc-http",
+     "nginx-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-HTTP-011",
+   "technology": "http",
+   "category": "cors",
+   "title": "Browser requests blocked by CORS",
+   "symptoms": [
+    "browser console shows CORS error",
+    "requests work from curl but not from the web app",
+    "preflight OPTIONS fails"
+   ],
+   "likely_causes": [
+    "origin not in allowed origins after domain change",
+    "preflight not handled for new headers or methods",
+    "credentials used with wildcard origin"
+   ],
+   "diagnostic_checks": [
+    "inspect the preflight response headers",
+    "compare the page origin with the allowed list",
+    "check whether credentials mode is include"
+   ],
+   "confirming_signals": [
+    "missing Access-Control-Allow-Origin for the page origin"
+   ],
+   "disconfirming_signals": [
+    "headers present and correct"
+   ],
+   "common_failed_actions": [
+    "disabling CORS checks in the browser"
+   ],
+   "safe_remediation_guidance": [
+    "allow the exact origin and required headers",
+    "handle OPTIONS on the route"
+   ],
+   "warnings": [
+    "allowing any origin with credentials is a security risk"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "mdn-http"
+    ]
+   }
+  },
+  {
+   "id": "KB-HTTP-012",
+   "technology": "http",
+   "category": "latency",
+   "title": "p99 latency spike while averages look fine",
+   "symptoms": [
+    "tail latency p99 high",
+    "some requests very slow",
+    "averages normal"
+   ],
+   "likely_causes": [
+    "garbage collection pauses",
+    "lock contention on a hot resource",
+    "a slow shard or instance",
+    "retries adding latency"
+   ],
+   "diagnostic_checks": [
+    "break down latency by instance and endpoint",
+    "correlate slow requests with GC or lock metrics",
+    "check retry counts"
+   ],
+   "confirming_signals": [
+    "one instance or shard dominates slow requests"
+   ],
+   "disconfirming_signals": [
+    "slow requests evenly spread with no resource correlation"
+   ],
+   "common_failed_actions": [
+    "adding instances without finding the slow component"
+   ],
+   "safe_remediation_guidance": [
+    "isolate or replace the slow instance",
+    "fix contention",
+    "bound retries"
+   ],
+   "warnings": [
+    "averages hide user-visible pain"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "rfc-http"
+    ]
+   }
+  },
+  {
+   "id": "KB-HTTP-013",
+   "technology": "http",
+   "category": "latency",
+   "title": "API slower right after a release",
+   "symptoms": [
+    "response times increased after deploy",
+    "database or downstream calls per request increased",
+    "CPU higher"
+   ],
+   "likely_causes": [
+    "new code performs extra queries (N+1)",
+    "cache key or cache usage changed",
+    "heavier serialization or logging"
+   ],
+   "diagnostic_checks": [
+    "compare queries or downstream calls per request before and after",
+    "check cache hit rate",
+    "profile the new code path"
+   ],
+   "confirming_signals": [
+    "calls per request increased at deploy time",
+    "cache hit rate dropped"
+   ],
+   "disconfirming_signals": [
+    "per-request work unchanged, only traffic increased"
+   ],
+   "common_failed_actions": [
+    "scaling the database first"
+   ],
+   "safe_remediation_guidance": [
+    "roll back or fix the regressed path",
+    "restore cache usage"
+   ],
+   "warnings": [
+    "scaling can mask a regression until traffic grows further"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "rfc-http"
+    ]
+   }
+  },
+  {
+   "id": "KB-HTTP-014",
+   "technology": "http",
+   "category": "timeouts",
+   "title": "Retry storm amplifying an outage",
+   "symptoms": [
+    "request volume multiplied during an incident",
+    "dependent services overloaded",
+    "errors persist after the original cause is fixed"
+   ],
+   "likely_causes": [
+    "clients retry without backoff",
+    "several layers each retry",
+    "no circuit breaker"
+   ],
+   "diagnostic_checks": [
+    "compare incoming request rate with normal",
+    "count retry attempts per original request",
+    "check retry settings at each layer"
+   ],
+   "confirming_signals": [
+    "traffic several times normal with high retry counts"
+   ],
+   "disconfirming_signals": [
+    "traffic normal"
+   ],
+   "common_failed_actions": [
+    "adding capacity only"
+   ],
+   "safe_remediation_guidance": [
+    "add backoff with jitter and retry budgets",
+    "retry at one layer only",
+    "add circuit breakers"
+   ],
+   "warnings": [
+    "retries are load"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "rfc-http"
+    ]
+   }
+  },
+  {
+   "id": "KB-HTTP-015",
+   "technology": "http",
+   "category": "connections",
+   "title": "Intermittent connection reset or empty reply behind a load balancer",
+   "symptoms": [
+    "occasional connection reset by peer",
+    "empty reply from server",
+    "errors after idle periods"
+   ],
+   "likely_causes": [
+    "load balancer idle timeout shorter than client or server keep-alive",
+    "server closes idle connections the client still reuses"
+   ],
+   "diagnostic_checks": [
+    "compare idle timeouts at client, load balancer and server",
+    "check whether errors follow idle periods"
+   ],
+   "confirming_signals": [
+    "resets happen on reused connections after idle"
+   ],
+   "disconfirming_signals": [
+    "resets on fresh connections under load"
+   ],
+   "common_failed_actions": [
+    "disabling keep-alive everywhere"
+   ],
+   "safe_remediation_guidance": [
+    "make the server keep-alive longer than the load balancer idle timeout, or the client shorter"
+   ],
+   "warnings": [
+    "mismatched timeouts produce rare, hard-to-reproduce errors"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "rfc-http"
+    ]
+   }
+  },
+  {
+   "id": "KB-DB-001",
+   "technology": "postgresql",
+   "category": "connection-exhaustion",
+   "title": "Database refuses connections: too many clients",
+   "symptoms": [
+    "errors like too many clients already or remaining connection slots are reserved",
+    "new requests fail while existing ones work",
+    "happened after scaling out"
+   ],
+   "likely_causes": [
+    "sum of application pool sizes exceeds max_connections",
+    "connection leak holding connections",
+    "many idle connections from old instances"
+   ],
+   "diagnostic_checks": [
+    "count connections by application and state",
+    "multiply instances by pool size and compare with max_connections",
+    "look for idle connections from terminated deploys"
+   ],
+   "confirming_signals": [
+    "total configured pools exceed server limit",
+    "many idle connections"
+   ],
+   "disconfirming_signals": [
+    "connection count well below limit"
+   ],
+   "common_failed_actions": [
+    "raising max_connections repeatedly"
+   ],
+   "safe_remediation_guidance": [
+    "add a connection pooler or cap pools per instance",
+    "fix leaks"
+   ],
+   "warnings": [
+    "each database connection costs memory",
+    "high limits can cause memory pressure"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "postgresql-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-DB-002",
+   "technology": "postgresql",
+   "category": "connection-exhaustion",
+   "title": "Application pool acquire timeouts",
+   "symptoms": [
+    "timeout acquiring a connection from the pool",
+    "requests queue then fail",
+    "database CPU looks normal"
+   ],
+   "likely_causes": [
+    "pool size too small for concurrency",
+    "connections held too long by slow queries or transactions",
+    "pool size changed in a release"
+   ],
+   "diagnostic_checks": [
+    "compare current pool size with the last known-good configuration",
+    "check pool wait time and active count",
+    "find long-held connections"
+   ],
+   "confirming_signals": [
+    "pool at maximum with waiters",
+    "pool size lower than before"
+   ],
+   "disconfirming_signals": [
+    "pool mostly idle while timeouts continue"
+   ],
+   "common_failed_actions": [
+    "restarting the application service alone"
+   ],
+   "safe_remediation_guidance": [
+    "restore the pool size to the last known-good value if it changed",
+    "shorten transactions holding connections"
+   ],
+   "warnings": [
+    "a bigger pool shifts pressure to the database",
+    "stay within max_connections"
+   ],
+   "example_fix": {
+    "label": "GENERAL EXAMPLE",
+    "diff": "- DB_POOL_SIZE=<current value>\n+ DB_POOL_SIZE=<last known-good value>",
+    "placeholders": true
+   },
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "postgresql-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-DB-003",
+   "technology": "postgresql",
+   "category": "locks",
+   "title": "Requests stuck waiting on locks",
+   "symptoms": [
+    "queries waiting a long time",
+    "lock wait timeouts",
+    "writes to one table stall"
+   ],
+   "likely_causes": [
+    "long transaction holding a row or table lock",
+    "migration taking an exclusive lock",
+    "batch job updating many rows"
+   ],
+   "diagnostic_checks": [
+    "list blocking and blocked sessions",
+    "identify the oldest open transaction",
+    "check running migrations or batch jobs"
+   ],
+   "confirming_signals": [
+    "one session blocks many others"
+   ],
+   "disconfirming_signals": [
+    "no blocked sessions in lock views"
+   ],
+   "common_failed_actions": [
+    "raising statement timeouts"
+   ],
+   "safe_remediation_guidance": [
+    "end or shorten the blocking transaction",
+    "run heavy changes in batches or off-peak"
+   ],
+   "warnings": [
+    "terminating a session rolls back its work"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "postgresql-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-DB-004",
+   "technology": "postgresql",
+   "category": "locks",
+   "title": "Deadlocks after a code change",
+   "symptoms": [
+    "deadlock detected errors",
+    "failures under concurrency",
+    "started after a release"
+   ],
+   "likely_causes": [
+    "two code paths lock the same rows in different orders",
+    "new batch job conflicts with online traffic"
+   ],
+   "diagnostic_checks": [
+    "read the deadlock log entries to find the two statements",
+    "compare lock order across code paths"
+   ],
+   "confirming_signals": [
+    "deadlock logs name the same tables from two paths"
+   ],
+   "disconfirming_signals": [
+    "no deadlock entries in logs"
+   ],
+   "common_failed_actions": [
+    "adding database CPU"
+   ],
+   "safe_remediation_guidance": [
+    "lock rows in a consistent order",
+    "retry deadlocked transactions safely"
+   ],
+   "warnings": [
+    "blind retries without fixing order keep failing under load"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "postgresql-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-DB-005",
+   "technology": "postgresql",
+   "category": "transactions",
+   "title": "Idle in transaction sessions holding resources",
+   "symptoms": [
+    "many sessions idle in transaction",
+    "bloat grows",
+    "locks held with no activity"
+   ],
+   "likely_causes": [
+    "application opens a transaction and waits on external calls",
+    "error path forgets to roll back"
+   ],
+   "diagnostic_checks": [
+    "list sessions by state and transaction age",
+    "find which application holds them"
+   ],
+   "confirming_signals": [
+    "long-lived idle in transaction sessions from one service"
+   ],
+   "disconfirming_signals": [
+    "no idle in transaction sessions"
+   ],
+   "common_failed_actions": [
+    "restarting the database"
+   ],
+   "safe_remediation_guidance": [
+    "fix the code path to commit or roll back promptly",
+    "set an idle transaction timeout"
+   ],
+   "warnings": [
+    "timeouts that kill sessions may surface as application errors"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "postgresql-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-DB-006",
+   "technology": "postgresql",
+   "category": "replication",
+   "title": "Read replica lag causing stale reads",
+   "symptoms": [
+    "users see old data after writing",
+    "replica lag metric high",
+    "lag spikes during batch jobs"
+   ],
+   "likely_causes": [
+    "large write batch on primary",
+    "replica under-provisioned",
+    "long query on replica conflicting with replay"
+   ],
+   "diagnostic_checks": [
+    "check replica lag and its timeline against batch jobs",
+    "check replay conflicts"
+   ],
+   "confirming_signals": [
+    "lag rises during a bulk job"
+   ],
+   "disconfirming_signals": [
+    "lag stays low while stale reads continue (check caching)"
+   ],
+   "common_failed_actions": [
+    "restarting the replica"
+   ],
+   "safe_remediation_guidance": [
+    "batch large writes",
+    "route read-after-write to primary"
+   ],
+   "warnings": [
+    "failover to a lagging replica loses recent writes"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "postgresql-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-DB-007",
+   "technology": "postgresql",
+   "category": "disk",
+   "title": "Database disk full from write-ahead log growth",
+   "symptoms": [
+    "database stops accepting writes",
+    "disk usage near 100 percent",
+    "WAL directory large"
+   ],
+   "likely_causes": [
+    "inactive replication slot retaining WAL",
+    "archiving failing",
+    "long-running transaction"
+   ],
+   "diagnostic_checks": [
+    "list replication slots and their retained WAL",
+    "check archive status",
+    "check oldest transaction"
+   ],
+   "confirming_signals": [
+    "an inactive slot retains most WAL"
+   ],
+   "disconfirming_signals": [
+    "WAL small",
+    "other files fill the disk"
+   ],
+   "common_failed_actions": [
+    "deleting log files by hand from the data directory"
+   ],
+   "safe_remediation_guidance": [
+    "remove the stale slot or fix archiving",
+    "then expand disk if needed"
+   ],
+   "warnings": [
+    "never delete WAL files manually"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "postgresql-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-DB-008",
+   "technology": "postgresql",
+   "category": "performance",
+   "title": "Queries slow after bulk load: stale statistics",
+   "symptoms": [
+    "queries suddenly much slower",
+    "plans switch to sequential scans",
+    "happened after a large import"
+   ],
+   "likely_causes": [
+    "planner statistics are stale after bulk changes",
+    "autovacuum or analyze has not caught up"
+   ],
+   "diagnostic_checks": [
+    "compare the query plan now with before",
+    "check last analyze time for the tables"
+   ],
+   "confirming_signals": [
+    "row estimates far from actual",
+    "last analyze before the import"
+   ],
+   "disconfirming_signals": [
+    "estimates accurate and plans unchanged"
+   ],
+   "common_failed_actions": [
+    "adding CPU to the database"
+   ],
+   "safe_remediation_guidance": [
+    "run ANALYZE on the affected tables",
+    "schedule it after bulk loads"
+   ],
+   "warnings": [
+    "very large tables can take time to analyze"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "postgresql-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-DB-009",
+   "technology": "postgresql",
+   "category": "performance",
+   "title": "Slow query from missing index",
+   "symptoms": [
+    "one endpoint slow",
+    "database CPU high",
+    "query time grows with table size"
+   ],
+   "likely_causes": [
+    "filter or join column not indexed",
+    "index not used due to type mismatch or function on column"
+   ],
+   "diagnostic_checks": [
+    "run EXPLAIN on the slow query",
+    "check which scan type is used and row counts"
+   ],
+   "confirming_signals": [
+    "sequential scan over a large table for a selective filter"
+   ],
+   "disconfirming_signals": [
+    "index scan already used"
+   ],
+   "common_failed_actions": [
+    "increasing application timeouts"
+   ],
+   "safe_remediation_guidance": [
+    "add a suitable index concurrently",
+    "fix type mismatches"
+   ],
+   "warnings": [
+    "index creation can lock writes unless built concurrently"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "postgresql-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-DB-010",
+   "technology": "database",
+   "category": "performance",
+   "title": "N+1 queries after an ORM change",
+   "symptoms": [
+    "page slower for accounts with more data",
+    "hundreds of small queries per request",
+    "started after data access refactor"
+   ],
+   "likely_causes": [
+    "lazy loading issues one query per item"
+   ],
+   "diagnostic_checks": [
+    "count queries per request",
+    "inspect the ORM loading strategy on the changed path"
+   ],
+   "confirming_signals": [
+    "query count scales with item count"
+   ],
+   "disconfirming_signals": [
+    "constant query count per request"
+   ],
+   "common_failed_actions": [
+    "adding a read replica"
+   ],
+   "safe_remediation_guidance": [
+    "load related rows in bulk with eager loading"
+   ],
+   "warnings": [
+    "eager loading everything can overfetch"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "postgresql-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-DB-011",
+   "technology": "postgresql",
+   "category": "migrations",
+   "title": "Migration locks a hot table during deploy",
+   "symptoms": [
+    "deploy hangs",
+    "writes to one table time out during migration",
+    "errors end when migration finishes"
+   ],
+   "likely_causes": [
+    "schema change requires an exclusive lock",
+    "migration waits behind a long transaction and blocks others"
+   ],
+   "diagnostic_checks": [
+    "check running migration statements and their lock waits"
+   ],
+   "confirming_signals": [
+    "migration waiting for or holding an exclusive lock"
+   ],
+   "disconfirming_signals": [
+    "migration completed quickly"
+   ],
+   "common_failed_actions": [
+    "retrying the deploy repeatedly"
+   ],
+   "safe_remediation_guidance": [
+    "use online migration patterns and lock timeouts"
+   ],
+   "warnings": [
+    "a queued exclusive lock blocks readers too"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "postgresql-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-DB-012",
+   "technology": "postgresql",
+   "category": "capacity",
+   "title": "Integer primary key or sequence exhausted",
+   "symptoms": [
+    "inserts fail with out of range or duplicate key errors",
+    "a busy table affected",
+    "no deploy correlation"
+   ],
+   "likely_causes": [
+    "32-bit integer column reached its maximum value"
+   ],
+   "diagnostic_checks": [
+    "check the current sequence value against the column type maximum"
+   ],
+   "confirming_signals": [
+    "sequence value near 2147483647"
+   ],
+   "disconfirming_signals": [
+    "sequence far below type maximum"
+   ],
+   "common_failed_actions": [
+    "restarting the application"
+   ],
+   "safe_remediation_guidance": [
+    "migrate the column to a 64-bit type with a planned migration"
+   ],
+   "warnings": [
+    "the migration on large tables needs careful online execution"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "postgresql-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-DB-013",
+   "technology": "database",
+   "category": "pooling",
+   "title": "Prepared statement errors behind a transaction pooler",
+   "symptoms": [
+    "prepared statement does not exist errors",
+    "errors after introducing a connection pooler",
+    "intermittent"
+   ],
+   "likely_causes": [
+    "transaction-level pooling breaks session features like prepared statements"
+   ],
+   "diagnostic_checks": [
+    "check pooler mode",
+    "check whether the driver uses server-side prepared statements"
+   ],
+   "confirming_signals": [
+    "pooler in transaction mode and driver prepares statements"
+   ],
+   "disconfirming_signals": [
+    "session pooling mode"
+   ],
+   "common_failed_actions": [
+    "increasing pool sizes"
+   ],
+   "safe_remediation_guidance": [
+    "disable server-side prepares or use session pooling for that client"
+   ],
+   "warnings": [
+    "session pooling reduces connection savings"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "postgresql-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-DB-014",
+   "technology": "database",
+   "category": "autoscaling",
+   "title": "Connections explode after application autoscaling",
+   "symptoms": [
+    "too many connections during traffic spike",
+    "autoscaler added instances",
+    "database memory rising"
+   ],
+   "likely_causes": [
+    "every new instance opens a full pool"
+   ],
+   "diagnostic_checks": [
+    "compute instances times pool size at peak",
+    "compare with database limit"
+   ],
+   "confirming_signals": [
+    "breach coincides with scale-out"
+   ],
+   "disconfirming_signals": [
+    "instance count stable"
+   ],
+   "common_failed_actions": [
+    "raising the database connection limit alone"
+   ],
+   "safe_remediation_guidance": [
+    "add a pooler",
+    "cap max instances or per-instance pool"
+   ],
+   "warnings": [
+    "autoscaling the app can overload a fixed-size database"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "postgresql-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-DB-015",
+   "technology": "database",
+   "category": "disk",
+   "title": "Table and index bloat slowing queries",
+   "symptoms": [
+    "queries gradually slower",
+    "table size grows without more rows",
+    "autovacuum runs constantly"
+   ],
+   "likely_causes": [
+    "frequent updates or deletes with vacuum unable to keep up",
+    "long transactions preventing cleanup"
+   ],
+   "diagnostic_checks": [
+    "compare live versus dead tuples",
+    "check oldest transaction age"
+   ],
+   "confirming_signals": [
+    "high dead tuple ratio"
+   ],
+   "disconfirming_signals": [
+    "dead tuples low"
+   ],
+   "common_failed_actions": [
+    "restarting the database"
+   ],
+   "safe_remediation_guidance": [
+    "tune autovacuum for hot tables",
+    "end long transactions"
+   ],
+   "warnings": [
+    "full rewrites lock tables"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "postgresql-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-REDIS-001",
+   "technology": "redis",
+   "category": "eviction",
+   "title": "Keys disappear because Redis evicts under memory pressure",
+   "symptoms": [
+    "sessions or cached values vanish",
+    "users logged out randomly",
+    "used memory at maxmemory"
+   ],
+   "likely_causes": [
+    "maxmemory reached with an eviction policy that removes any key",
+    "cache data sharing an instance with sessions"
+   ],
+   "diagnostic_checks": [
+    "check used memory against maxmemory",
+    "check eviction policy and evicted keys counter"
+   ],
+   "confirming_signals": [
+    "evicted keys rising while memory at limit"
+   ],
+   "disconfirming_signals": [
+    "no evictions recorded"
+   ],
+   "common_failed_actions": [
+    "extending session cookie lifetime"
+   ],
+   "safe_remediation_guidance": [
+    "separate sessions from cache",
+    "use a no-eviction policy for data that must persist",
+    "add memory"
+   ],
+   "warnings": [
+    "noeviction makes writes fail when full"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "redis-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-REDIS-002",
+   "technology": "redis",
+   "category": "memory",
+   "title": "Redis rejects writes: OOM command not allowed",
+   "symptoms": [
+    "OOM command not allowed errors",
+    "writes fail while reads work"
+   ],
+   "likely_causes": [
+    "maxmemory reached with noeviction policy",
+    "keys without TTL accumulating"
+   ],
+   "diagnostic_checks": [
+    "check memory usage and key count growth",
+    "sample keys without TTL"
+   ],
+   "confirming_signals": [
+    "memory at maxmemory with many non-expiring keys"
+   ],
+   "disconfirming_signals": [
+    "memory below limit"
+   ],
+   "common_failed_actions": [
+    "flushing the whole database during an incident"
+   ],
+   "safe_remediation_guidance": [
+    "set TTLs on cache keys",
+    "remove the growth source",
+    "add memory"
+   ],
+   "warnings": [
+    "flushing loses session and queue data"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "redis-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-REDIS-003",
+   "technology": "redis",
+   "category": "latency",
+   "title": "Redis latency spikes from slow commands or big keys",
+   "symptoms": [
+    "Redis latency spikes",
+    "application timeouts talking to Redis",
+    "single-threaded CPU saturated"
+   ],
+   "likely_causes": [
+    "commands scanning many keys",
+    "very large keys or collections",
+    "persistence fork on large dataset"
+   ],
+   "diagnostic_checks": [
+    "review the slow log",
+    "find big keys",
+    "correlate spikes with persistence snapshots"
+   ],
+   "confirming_signals": [
+    "slow log shows KEYS or large range commands"
+   ],
+   "disconfirming_signals": [
+    "slow log empty"
+   ],
+   "common_failed_actions": [
+    "adding more application instances"
+   ],
+   "safe_remediation_guidance": [
+    "replace full scans with incremental scans",
+    "split big keys"
+   ],
+   "warnings": [
+    "blocking commands stall every client"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "redis-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-REDIS-004",
+   "technology": "redis",
+   "category": "failover",
+   "title": "Duplicate processing after cache or Redis failover",
+   "symptoms": [
+    "duplicate charges or duplicate jobs",
+    "after a failover",
+    "idempotency checks missing"
+   ],
+   "likely_causes": [
+    "idempotency or dedupe keys lost during failover",
+    "replica missing recent writes"
+   ],
+   "diagnostic_checks": [
+    "check failover time against duplicates",
+    "check idempotency key hit rate"
+   ],
+   "confirming_signals": [
+    "dedupe hit rate dropped at failover"
+   ],
+   "disconfirming_signals": [
+    "duplicates predate the failover"
+   ],
+   "common_failed_actions": [
+    "restarting workers only"
+   ],
+   "safe_remediation_guidance": [
+    "restore the dedupe store",
+    "make consumers idempotent with durable keys"
+   ],
+   "warnings": [
+    "in-memory dedupe is not durable"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "redis-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-CACHE-001",
+   "technology": "cache",
+   "category": "performance",
+   "title": "Cache hit rate collapsed after deploy",
+   "symptoms": [
+    "backend load jumps after release",
+    "cache hit rate near zero",
+    "latency up"
+   ],
+   "likely_causes": [
+    "cache key format changed",
+    "serialization change makes entries unreadable",
+    "TTL set to zero"
+   ],
+   "diagnostic_checks": [
+    "compare cache keys written and read by new code",
+    "check hit rate timeline against deploy"
+   ],
+   "confirming_signals": [
+    "hit rate dropped at deploy time"
+   ],
+   "disconfirming_signals": [
+    "hit rate unchanged"
+   ],
+   "common_failed_actions": [
+    "scaling the backend"
+   ],
+   "safe_remediation_guidance": [
+    "restore key compatibility",
+    "warm the cache"
+   ],
+   "warnings": [
+    "a full cold cache can cause a stampede"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "redis-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-CACHE-002",
+   "technology": "cache",
+   "category": "stampede",
+   "title": "Cache stampede when popular keys expire",
+   "symptoms": [
+    "periodic load spikes on the database",
+    "many identical queries at once",
+    "spikes when TTLs expire"
+   ],
+   "likely_causes": [
+    "many requests recompute the same expired key simultaneously"
+   ],
+   "diagnostic_checks": [
+    "correlate spikes with key expiry times",
+    "count duplicate concurrent queries"
+   ],
+   "confirming_signals": [
+    "identical queries in bursts at expiry"
+   ],
+   "disconfirming_signals": [
+    "steady load without bursts"
+   ],
+   "common_failed_actions": [
+    "shortening TTLs"
+   ],
+   "safe_remediation_guidance": [
+    "add request coalescing or early refresh",
+    "add jitter to TTLs"
+   ],
+   "warnings": [
+    "synchronized expiry across keys amplifies spikes"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "redis-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-CACHE-003",
+   "technology": "cache",
+   "category": "staleness",
+   "title": "Stale data served from cache after a fix",
+   "symptoms": [
+    "fix deployed but users still see old results",
+    "clearing one key fixes one user"
+   ],
+   "likely_causes": [
+    "long TTL on cached results",
+    "cache not invalidated on write"
+   ],
+   "diagnostic_checks": [
+    "check TTL on affected keys",
+    "check invalidation on the write path"
+   ],
+   "confirming_signals": [
+    "stale keys have long TTLs"
+   ],
+   "disconfirming_signals": [
+    "keys refreshed recently"
+   ],
+   "common_failed_actions": [
+    "redeploying the fix repeatedly"
+   ],
+   "safe_remediation_guidance": [
+    "invalidate affected keys",
+    "add write-path invalidation"
+   ],
+   "warnings": [
+    "mass invalidation can stampede the backend"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "redis-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-REDIS-005",
+   "technology": "redis",
+   "category": "connections",
+   "title": "Redis max clients reached",
+   "symptoms": [
+    "max number of clients reached errors",
+    "connection failures from new instances"
+   ],
+   "likely_causes": [
+    "connection leak or pool per request",
+    "too many instances"
+   ],
+   "diagnostic_checks": [
+    "count clients by source",
+    "check pooling configuration"
+   ],
+   "confirming_signals": [
+    "client count at limit from one service"
+   ],
+   "disconfirming_signals": [
+    "client count low"
+   ],
+   "common_failed_actions": [
+    "restarting Redis"
+   ],
+   "safe_remediation_guidance": [
+    "use a shared pool",
+    "fix leak"
+   ],
+   "warnings": [
+    "restarting Redis drops in-memory data unless persisted"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "redis-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-CACHE-004",
+   "technology": "cdn",
+   "category": "caching",
+   "title": "CDN serving stale or wrong content",
+   "symptoms": [
+    "users in some regions see old assets",
+    "purge fixes temporarily",
+    "origin serves correct content"
+   ],
+   "likely_causes": [
+    "long cache TTL at edge",
+    "cache key ignores a varying header",
+    "origin sends wrong cache headers"
+   ],
+   "diagnostic_checks": [
+    "request the asset from several edges and compare headers",
+    "check cache-control from origin"
+   ],
+   "confirming_signals": [
+    "edges return old content with long max-age"
+   ],
+   "disconfirming_signals": [
+    "all edges return new content"
+   ],
+   "common_failed_actions": [
+    "redeploying origin"
+   ],
+   "safe_remediation_guidance": [
+    "purge affected paths",
+    "fix cache-control and cache key"
+   ],
+   "warnings": [
+    "versioned asset names avoid purge dependence"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "redis-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-CACHE-005",
+   "technology": "cdn",
+   "category": "latency",
+   "title": "Region-specific slowness after routing or DNS change",
+   "symptoms": [
+    "slow only for users in one region",
+    "started after DNS or CDN change"
+   ],
+   "likely_causes": [
+    "geo-routing records missing",
+    "traffic routed to a distant origin"
+   ],
+   "diagnostic_checks": [
+    "resolve the hostname from affected regions",
+    "check which edge or origin serves them"
+   ],
+   "confirming_signals": [
+    "region resolves to a far origin"
+   ],
+   "disconfirming_signals": [
+    "region resolves to nearby edge"
+   ],
+   "common_failed_actions": [
+    "purging the CDN"
+   ],
+   "safe_remediation_guidance": [
+    "restore geo-routing records"
+   ],
+   "warnings": [
+    "DNS TTLs delay recovery"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "rfc-dns"
+    ]
+   }
+  },
+  {
+   "id": "KB-RES-001",
+   "technology": "compute",
+   "category": "cpu",
+   "title": "CPU saturation causing slow responses",
+   "symptoms": [
+    "CPU near 100 percent",
+    "latency rising with load",
+    "request queueing"
+   ],
+   "likely_causes": [
+    "traffic increase beyond capacity",
+    "hot code path or regression",
+    "runaway background job"
+   ],
+   "diagnostic_checks": [
+    "profile CPU on a busy instance",
+    "correlate with traffic and deploys",
+    "list top processes"
+   ],
+   "confirming_signals": [
+    "one function or process dominates CPU"
+   ],
+   "disconfirming_signals": [
+    "CPU low while latency high (look at dependencies)"
+   ],
+   "common_failed_actions": [
+    "restarting instances repeatedly"
+   ],
+   "safe_remediation_guidance": [
+    "fix the hot path or add capacity",
+    "move background jobs off serving nodes"
+   ],
+   "warnings": [
+    "autoscaling on CPU lags sudden spikes"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "kubernetes-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-RES-002",
+   "technology": "containers",
+   "category": "cpu",
+   "title": "CPU throttling from container limits",
+   "symptoms": [
+    "latency spikes while CPU usage looks moderate",
+    "throttled periods metric high",
+    "worse after limits lowered"
+   ],
+   "likely_causes": [
+    "container CPU limit too low for bursty work"
+   ],
+   "diagnostic_checks": [
+    "check CPU throttling metrics per container",
+    "compare limits before and after the change"
+   ],
+   "confirming_signals": [
+    "high throttled time"
+   ],
+   "disconfirming_signals": [
+    "no throttling"
+   ],
+   "common_failed_actions": [
+    "adding replicas without changing limits"
+   ],
+   "safe_remediation_guidance": [
+    "raise CPU limits or remove hard limits for latency-sensitive services"
+   ],
+   "warnings": [
+    "removing limits can let noisy neighbours starve others"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "kubernetes-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-RES-003",
+   "technology": "compute",
+   "category": "memory",
+   "title": "Memory leak: memory grows until restart",
+   "symptoms": [
+    "memory grows steadily",
+    "restarts fix it for a while",
+    "eventual out of memory"
+   ],
+   "likely_causes": [
+    "unbounded cache or listener accumulation",
+    "objects retained by closures or globals"
+   ],
+   "diagnostic_checks": [
+    "compare heap snapshots over time",
+    "check caches without bounds"
+   ],
+   "confirming_signals": [
+    "specific object types grow between snapshots"
+   ],
+   "disconfirming_signals": [
+    "memory flat under steady load"
+   ],
+   "common_failed_actions": [
+    "scheduling restarts as the fix"
+   ],
+   "safe_remediation_guidance": [
+    "bound caches",
+    "remove leaked references"
+   ],
+   "warnings": [
+    "scheduled restarts hide leaks and fail under peak"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "nodejs-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-RES-004",
+   "technology": "containers",
+   "category": "oom",
+   "title": "Container OOMKilled",
+   "symptoms": [
+    "container terminated with reason OOMKilled",
+    "exit code 137",
+    "restarts under load"
+   ],
+   "likely_causes": [
+    "memory limit below real working set",
+    "leak",
+    "large request payloads"
+   ],
+   "diagnostic_checks": [
+    "check last state termination reason",
+    "compare working set with limit",
+    "check limit changes"
+   ],
+   "confirming_signals": [
+    "termination reason OOMKilled",
+    "usage reaching the limit"
+   ],
+   "disconfirming_signals": [
+    "termination reason different (look at liveness or crash)"
+   ],
+   "common_failed_actions": [
+    "restarting pods only"
+   ],
+   "safe_remediation_guidance": [
+    "fix the leak or raise the memory limit to the measured need",
+    "bound payload sizes"
+   ],
+   "warnings": [
+    "raising limits without cause analysis delays the next OOM"
+   ],
+   "example_fix": {
+    "label": "GENERAL EXAMPLE",
+    "diff": "- MEMORY_LIMIT=<current limit>\n+ MEMORY_LIMIT=<measured peak working set plus headroom>",
+    "placeholders": true
+   },
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "kubernetes-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-RES-005",
+   "technology": "jvm",
+   "category": "gc",
+   "title": "Long garbage collection pauses",
+   "symptoms": [
+    "latency spikes of seconds",
+    "GC pause logs",
+    "restarting helps briefly"
+   ],
+   "likely_causes": [
+    "heap too small for live data",
+    "memory limit reduced",
+    "allocation spike"
+   ],
+   "diagnostic_checks": [
+    "read GC logs for pause length and frequency",
+    "compare heap and container limits"
+   ],
+   "confirming_signals": [
+    "frequent full GCs near heap maximum"
+   ],
+   "disconfirming_signals": [
+    "short GC pauses"
+   ],
+   "common_failed_actions": [
+    "restarting pods on a schedule"
+   ],
+   "safe_remediation_guidance": [
+    "size heap to working set with headroom",
+    "fix allocation hot spots"
+   ],
+   "warnings": [
+    "heap larger than container limit causes OOM kills"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "kubernetes-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-RES-006",
+   "technology": "runtime",
+   "category": "threads",
+   "title": "Worker or thread pool exhaustion",
+   "symptoms": [
+    "requests queue while CPU is low",
+    "timeouts under moderate load",
+    "all workers busy"
+   ],
+   "likely_causes": [
+    "workers blocked on slow I/O",
+    "pool too small",
+    "deadlocked workers"
+   ],
+   "diagnostic_checks": [
+    "check busy versus idle workers",
+    "dump stacks to see what workers wait on"
+   ],
+   "confirming_signals": [
+    "all workers waiting on the same dependency"
+   ],
+   "disconfirming_signals": [
+    "idle workers available"
+   ],
+   "common_failed_actions": [
+    "adding CPU"
+   ],
+   "safe_remediation_guidance": [
+    "add timeouts to the slow dependency",
+    "size the pool to concurrency needs"
+   ],
+   "warnings": [
+    "bigger pools can overload the dependency"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "python-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-RES-007",
+   "technology": "nodejs",
+   "category": "event-loop",
+   "title": "Node.js event loop blocked",
+   "symptoms": [
+    "all requests slow at once",
+    "event loop lag high",
+    "single CPU core busy"
+   ],
+   "likely_causes": [
+    "synchronous CPU work on the main thread",
+    "large JSON parse or regex backtracking"
+   ],
+   "diagnostic_checks": [
+    "measure event loop lag",
+    "profile to find synchronous hot functions"
+   ],
+   "confirming_signals": [
+    "long synchronous frames in profile"
+   ],
+   "disconfirming_signals": [
+    "event loop lag low"
+   ],
+   "common_failed_actions": [
+    "adding memory"
+   ],
+   "safe_remediation_guidance": [
+    "move heavy work to worker threads or async chunks"
+   ],
+   "warnings": [
+    "one slow request blocks every other request in Node"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "nodejs-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-RES-008",
+   "technology": "linux",
+   "category": "file-descriptors",
+   "title": "Too many open files (EMFILE)",
+   "symptoms": [
+    "errors too many open files",
+    "new connections fail",
+    "sockets or files leak"
+   ],
+   "likely_causes": [
+    "descriptor limit too low",
+    "leaked sockets or file handles"
+   ],
+   "diagnostic_checks": [
+    "count open descriptors of the process over time",
+    "compare with the limit"
+   ],
+   "confirming_signals": [
+    "descriptor count grows to the limit"
+   ],
+   "disconfirming_signals": [
+    "count far below limit"
+   ],
+   "common_failed_actions": [
+    "restarting without finding the leak"
+   ],
+   "safe_remediation_guidance": [
+    "close leaked handles",
+    "raise the limit appropriately"
+   ],
+   "warnings": [
+    "raising the limit only delays exhaustion from a leak"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "nodejs-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-RES-009",
+   "technology": "linux",
+   "category": "network",
+   "title": "Ephemeral port exhaustion on outbound calls",
+   "symptoms": [
+    "cannot assign requested address errors",
+    "outbound calls fail at high rate",
+    "many TIME_WAIT sockets"
+   ],
+   "likely_causes": [
+    "new connection per request without keep-alive"
+   ],
+   "diagnostic_checks": [
+    "count sockets in TIME_WAIT",
+    "check client connection reuse"
+   ],
+   "confirming_signals": [
+    "thousands of TIME_WAIT sockets to one destination"
+   ],
+   "disconfirming_signals": [
+    "few TIME_WAIT sockets"
+   ],
+   "common_failed_actions": [
+    "adding instances"
+   ],
+   "safe_remediation_guidance": [
+    "enable connection pooling and keep-alive"
+   ],
+   "warnings": [
+    "kernel tweaks mask the missing reuse"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "rfc-http"
+    ]
+   }
+  },
+  {
+   "id": "KB-RES-010",
+   "technology": "linux",
+   "category": "disk",
+   "title": "Disk full from logs",
+   "symptoms": [
+    "no space left on device",
+    "writes fail",
+    "log directory very large"
+   ],
+   "likely_causes": [
+    "debug logging left on",
+    "log rotation missing",
+    "crash loop writing dumps"
+   ],
+   "diagnostic_checks": [
+    "find the largest directories",
+    "check log level and rotation"
+   ],
+   "confirming_signals": [
+    "logs consume most space"
+   ],
+   "disconfirming_signals": [
+    "other data fills the disk"
+   ],
+   "common_failed_actions": [
+    "restarting services which refill the disk"
+   ],
+   "safe_remediation_guidance": [
+    "lower log level",
+    "rotate and compress logs",
+    "add disk usage alerts"
+   ],
+   "warnings": [
+    "deleting open log files may not free space until processes reopen them"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "kubernetes-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-RES-011",
+   "technology": "linux",
+   "category": "disk",
+   "title": "Inode exhaustion while disk has free space",
+   "symptoms": [
+    "no space left on device although free space exists",
+    "millions of small files"
+   ],
+   "likely_causes": [
+    "many tiny temp or cache files"
+   ],
+   "diagnostic_checks": [
+    "check inode usage per filesystem",
+    "find directories with most files"
+   ],
+   "confirming_signals": [
+    "inode usage at 100 percent"
+   ],
+   "disconfirming_signals": [
+    "inode usage normal"
+   ],
+   "common_failed_actions": [
+    "expanding the disk size only"
+   ],
+   "safe_remediation_guidance": [
+    "clean up small files",
+    "fix the producer",
+    "use a filesystem with more inodes"
+   ],
+   "warnings": [
+    "some filesystems cannot add inodes without recreation"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "kubernetes-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-RES-012",
+   "technology": "linux",
+   "category": "disk",
+   "title": "Disk I/O saturation",
+   "symptoms": [
+    "high I/O wait",
+    "slow database and file operations",
+    "latency rises with writes"
+   ],
+   "likely_causes": [
+    "burst of writes from batch job",
+    "index rebuild",
+    "storage throttling limits"
+   ],
+   "diagnostic_checks": [
+    "check I/O wait and device utilisation",
+    "correlate with jobs",
+    "check provisioned IOPS"
+   ],
+   "confirming_signals": [
+    "device at 100 percent utilisation"
+   ],
+   "disconfirming_signals": [
+    "low I/O wait"
+   ],
+   "common_failed_actions": [
+    "adding CPU"
+   ],
+   "safe_remediation_guidance": [
+    "throttle or reschedule heavy jobs",
+    "provision more IOPS"
+   ],
+   "warnings": [
+    "cloud disks may throttle after burst credits run out"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "postgresql-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-K8S-001",
+   "technology": "kubernetes",
+   "category": "crashloop",
+   "title": "Pods in CrashLoopBackOff",
+   "symptoms": [
+    "pods restart repeatedly",
+    "CrashLoopBackOff status",
+    "application exits soon after start"
+   ],
+   "likely_causes": [
+    "missing configuration or secret",
+    "application error at startup",
+    "liveness probe killing a slow starter",
+    "OOM on start"
+   ],
+   "diagnostic_checks": [
+    "read logs of the previous container instance",
+    "check last termination reason and exit code",
+    "check events for probe failures"
+   ],
+   "confirming_signals": [
+    "previous logs show a startup exception or missing setting"
+   ],
+   "disconfirming_signals": [
+    "exits caused by OOMKilled or liveness (see those entries)"
+   ],
+   "common_failed_actions": [
+    "deleting pods repeatedly"
+   ],
+   "safe_remediation_guidance": [
+    "fix the startup error or configuration",
+    "add a startup probe for slow starts"
+   ],
+   "warnings": [
+    "backoff delays grow, so recovery after the fix can take minutes"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "kubernetes-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-K8S-002",
+   "technology": "kubernetes",
+   "category": "images",
+   "title": "ImagePullBackOff or ErrImagePull",
+   "symptoms": [
+    "pods stuck in ImagePullBackOff",
+    "new deploy cannot start",
+    "old pods still running"
+   ],
+   "likely_causes": [
+    "wrong image tag",
+    "registry credentials expired",
+    "registry unavailable or rate-limited"
+   ],
+   "diagnostic_checks": [
+    "describe the pod to read the pull error",
+    "verify the tag exists",
+    "check pull secret validity"
+   ],
+   "confirming_signals": [
+    "error says not found or unauthorized"
+   ],
+   "disconfirming_signals": [
+    "pull succeeds manually from the node"
+   ],
+   "common_failed_actions": [
+    "restarting nodes"
+   ],
+   "safe_remediation_guidance": [
+    "fix the tag or credentials",
+    "mirror images to avoid rate limits"
+   ],
+   "warnings": [
+    "latest tags make rollbacks unreliable"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "kubernetes-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-K8S-003",
+   "technology": "kubernetes",
+   "category": "probes",
+   "title": "Readiness probe failing after deploy",
+   "symptoms": [
+    "pods running but not ready",
+    "service has no endpoints",
+    "503 errors"
+   ],
+   "likely_causes": [
+    "readiness endpoint depends on a failing dependency",
+    "wrong probe path or port",
+    "app slower to warm up"
+   ],
+   "diagnostic_checks": [
+    "call the readiness endpoint inside the pod",
+    "compare probe settings with the app port and path"
+   ],
+   "confirming_signals": [
+    "probe endpoint returns errors or wrong port"
+   ],
+   "disconfirming_signals": [
+    "endpoint healthy but pods still not ready (check probe timing)"
+   ],
+   "common_failed_actions": [
+    "disabling readiness probes"
+   ],
+   "safe_remediation_guidance": [
+    "fix probe path and port",
+    "make readiness reflect only what the instance needs"
+   ],
+   "warnings": [
+    "readiness depending on shared dependencies can remove every pod at once"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "kubernetes-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-K8S-004",
+   "technology": "kubernetes",
+   "category": "probes",
+   "title": "Liveness probe restarting healthy but slow pods",
+   "symptoms": [
+    "restarts under load",
+    "exit due to liveness failure",
+    "pods healthy when idle"
+   ],
+   "likely_causes": [
+    "liveness timeout too aggressive",
+    "probe competes with busy workers"
+   ],
+   "diagnostic_checks": [
+    "check events for liveness failures",
+    "compare probe timeout with response time under load"
+   ],
+   "confirming_signals": [
+    "liveness failures during load spikes"
+   ],
+   "disconfirming_signals": [
+    "no liveness failures"
+   ],
+   "common_failed_actions": [
+    "increasing replicas while probe keeps killing pods"
+   ],
+   "safe_remediation_guidance": [
+    "relax liveness thresholds",
+    "add a startup probe",
+    "keep liveness cheap"
+   ],
+   "warnings": [
+    "liveness restarts during load can cascade"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "kubernetes-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-K8S-005",
+   "technology": "kubernetes",
+   "category": "scheduling",
+   "title": "Pods pending: insufficient resources",
+   "symptoms": [
+    "pods stuck in Pending",
+    "events say insufficient cpu or memory",
+    "deploy never completes"
+   ],
+   "likely_causes": [
+    "requests larger than any node can fit",
+    "cluster at capacity",
+    "node selector or taint mismatch"
+   ],
+   "diagnostic_checks": [
+    "read scheduling events for the pod",
+    "compare requests with node allocatable"
+   ],
+   "confirming_signals": [
+    "events show insufficient resources or unmatched selectors"
+   ],
+   "disconfirming_signals": [
+    "pods scheduled (look elsewhere)"
+   ],
+   "common_failed_actions": [
+    "deleting other workloads at random"
+   ],
+   "safe_remediation_guidance": [
+    "right-size requests",
+    "add nodes",
+    "fix selectors or tolerations"
+   ],
+   "warnings": [
+    "overcommitted requests cause evictions later"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "kubernetes-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-K8S-006",
+   "technology": "kubernetes",
+   "category": "eviction",
+   "title": "Pods evicted for node disk pressure",
+   "symptoms": [
+    "pods evicted",
+    "nodes report disk pressure",
+    "many old images on nodes"
+   ],
+   "likely_causes": [
+    "image and log accumulation on nodes",
+    "emptyDir growth"
+   ],
+   "diagnostic_checks": [
+    "check node conditions",
+    "check image and log disk usage on nodes"
+   ],
+   "confirming_signals": [
+    "node DiskPressure true"
+   ],
+   "disconfirming_signals": [
+    "no pressure conditions"
+   ],
+   "common_failed_actions": [
+    "adding nodes that later fill too"
+   ],
+   "safe_remediation_guidance": [
+    "tune image garbage collection",
+    "limit ephemeral storage"
+   ],
+   "warnings": [
+    "evictions can take down many replicas at once"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "kubernetes-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-K8S-007",
+   "technology": "kubernetes",
+   "category": "config",
+   "title": "Missing ConfigMap or Secret value after deploy",
+   "symptoms": [
+    "pods fail at start with missing setting",
+    "works in one environment not another",
+    "canary fine but production fails"
+   ],
+   "likely_causes": [
+    "new key not added to the production Secret or ConfigMap",
+    "name mismatch"
+   ],
+   "diagnostic_checks": [
+    "diff environment configuration between namespaces",
+    "list keys referenced by the deployment"
+   ],
+   "confirming_signals": [
+    "referenced key missing in production"
+   ],
+   "disconfirming_signals": [
+    "all keys present"
+   ],
+   "common_failed_actions": [
+    "restarting pods"
+   ],
+   "safe_remediation_guidance": [
+    "add the missing key",
+    "validate config in the pipeline before rollout"
+   ],
+   "warnings": [
+    "secrets in plain logs during debugging leak credentials"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "kubernetes-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-K8S-008",
+   "technology": "kubernetes",
+   "category": "rollout",
+   "title": "Rollout stuck: new replicas never become available",
+   "symptoms": [
+    "deployment progress deadline exceeded",
+    "old and new versions both running"
+   ],
+   "likely_causes": [
+    "new pods failing readiness or crashing",
+    "insufficient capacity for surge"
+   ],
+   "diagnostic_checks": [
+    "check rollout status and new pod states"
+   ],
+   "confirming_signals": [
+    "new pods not ready"
+   ],
+   "disconfirming_signals": [
+    "new pods ready but rollout paused"
+   ],
+   "common_failed_actions": [
+    "forcing all old pods down"
+   ],
+   "safe_remediation_guidance": [
+    "fix the new version or roll back"
+   ],
+   "warnings": [
+    "forcing a rollout can drop capacity"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "kubernetes-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-K8S-009",
+   "technology": "kubernetes",
+   "category": "autoscaling",
+   "title": "Autoscaler not scaling or flapping",
+   "symptoms": [
+    "replicas stay low under load",
+    "or replicas oscillate",
+    "metrics unavailable"
+   ],
+   "likely_causes": [
+    "metrics server missing",
+    "requests not set so utilisation unknown",
+    "thresholds too tight"
+   ],
+   "diagnostic_checks": [
+    "check autoscaler status and current metrics",
+    "confirm resource requests set"
+   ],
+   "confirming_signals": [
+    "autoscaler reports unknown metrics"
+   ],
+   "disconfirming_signals": [
+    "metrics present and within target"
+   ],
+   "common_failed_actions": [
+    "setting a huge fixed replica count permanently"
+   ],
+   "safe_remediation_guidance": [
+    "set requests",
+    "fix metrics",
+    "add stabilisation windows"
+   ],
+   "warnings": [
+    "scaling a service can overload its database"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "kubernetes-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-K8S-010",
+   "technology": "kubernetes",
+   "category": "dns",
+   "title": "Intermittent DNS failures inside the cluster",
+   "symptoms": [
+    "sporadic name resolution failures",
+    "timeouts resolving service names",
+    "worse under load"
+   ],
+   "likely_causes": [
+    "cluster DNS overloaded",
+    "search domains causing many lookups",
+    "conntrack races"
+   ],
+   "diagnostic_checks": [
+    "check DNS pod errors and latency",
+    "test lookups from an affected pod"
+   ],
+   "confirming_signals": [
+    "DNS pods saturated or erroring"
+   ],
+   "disconfirming_signals": [
+    "DNS healthy"
+   ],
+   "common_failed_actions": [
+    "restarting application pods"
+   ],
+   "safe_remediation_guidance": [
+    "scale DNS",
+    "use fully qualified names",
+    "add node-local caching"
+   ],
+   "warnings": [
+    "many search domains multiply queries"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "kubernetes-docs",
+     "rfc-dns"
+    ]
+   }
+  },
+  {
+   "id": "KB-K8S-011",
+   "technology": "kubernetes",
+   "category": "networking",
+   "title": "Service has no endpoints",
+   "symptoms": [
+    "connection refused to service",
+    "service endpoints empty",
+    "after label change"
+   ],
+   "likely_causes": [
+    "selector no longer matches pod labels",
+    "pods not ready"
+   ],
+   "diagnostic_checks": [
+    "compare service selector with pod labels",
+    "list endpoints"
+   ],
+   "confirming_signals": [
+    "selector mismatch"
+   ],
+   "disconfirming_signals": [
+    "endpoints present"
+   ],
+   "common_failed_actions": [
+    "recreating the service repeatedly"
+   ],
+   "safe_remediation_guidance": [
+    "fix selector or labels"
+   ],
+   "warnings": [
+    "label changes in templates silently detach services"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "kubernetes-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-K8S-012",
+   "technology": "kubernetes",
+   "category": "ingress",
+   "title": "Ingress returns 502 or 504",
+   "symptoms": [
+    "ingress 502 or 504",
+    "service works from inside the cluster"
+   ],
+   "likely_causes": [
+    "ingress points to wrong service port",
+    "backend timeouts shorter than app",
+    "pods not ready"
+   ],
+   "diagnostic_checks": [
+    "check ingress backend service and port",
+    "check ingress controller logs"
+   ],
+   "confirming_signals": [
+    "port mismatch or upstream errors in controller logs"
+   ],
+   "disconfirming_signals": [
+    "controller shows healthy upstreams"
+   ],
+   "common_failed_actions": [
+    "restarting the ingress controller only"
+   ],
+   "safe_remediation_guidance": [
+    "fix backend port",
+    "align timeouts"
+   ],
+   "warnings": [
+    "annotations differ between ingress controllers"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "kubernetes-docs",
+     "nginx-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-K8S-013",
+   "technology": "kubernetes",
+   "category": "storage",
+   "title": "Volume mount failures",
+   "symptoms": [
+    "pods stuck ContainerCreating",
+    "mount errors in events",
+    "after node or zone change"
+   ],
+   "likely_causes": [
+    "volume attached elsewhere",
+    "zone mismatch",
+    "missing permissions"
+   ],
+   "diagnostic_checks": [
+    "read pod events for mount errors",
+    "check volume attachment and zone"
+   ],
+   "confirming_signals": [
+    "volume still attached to an old node"
+   ],
+   "disconfirming_signals": [
+    "volume available"
+   ],
+   "common_failed_actions": [
+    "deleting the volume"
+   ],
+   "safe_remediation_guidance": [
+    "detach from old node",
+    "schedule in the right zone"
+   ],
+   "warnings": [
+    "deleting volumes loses data"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "kubernetes-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-K8S-014",
+   "technology": "kubernetes",
+   "category": "permissions",
+   "title": "Container permission denied at runtime",
+   "symptoms": [
+    "permission denied writing files",
+    "after security context change",
+    "works locally"
+   ],
+   "likely_causes": [
+    "container now runs as non-root",
+    "volume ownership mismatch",
+    "read-only root filesystem"
+   ],
+   "diagnostic_checks": [
+    "check security context user and filesystem settings",
+    "check ownership of the path"
+   ],
+   "confirming_signals": [
+    "process user lacks write permission"
+   ],
+   "disconfirming_signals": [
+    "permissions correct"
+   ],
+   "common_failed_actions": [
+    "running as root to bypass"
+   ],
+   "safe_remediation_guidance": [
+    "set proper ownership or a writable volume"
+   ],
+   "warnings": [
+    "running as root widens attack surface"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "kubernetes-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-DOCKER-001",
+   "technology": "docker",
+   "category": "containers",
+   "title": "Container exits immediately after start",
+   "symptoms": [
+    "container exits with code 1 or 127",
+    "works on developer machine",
+    "new image"
+   ],
+   "likely_causes": [
+    "missing entrypoint binary",
+    "missing environment variable",
+    "wrong architecture image"
+   ],
+   "diagnostic_checks": [
+    "read container logs",
+    "inspect exit code",
+    "run the image interactively"
+   ],
+   "confirming_signals": [
+    "command not found or config error in logs"
+   ],
+   "disconfirming_signals": [
+    "container stays up when run manually with same env"
+   ],
+   "common_failed_actions": [
+    "rebuilding with no changes"
+   ],
+   "safe_remediation_guidance": [
+    "fix entrypoint or env",
+    "build for the correct architecture"
+   ],
+   "warnings": [
+    "exit code 137 usually means killed, not an app error"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "docker-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-DEPLOY-001",
+   "technology": "deployment",
+   "category": "config-regression",
+   "title": "Configuration value changed in a release",
+   "symptoms": [
+    "failures start immediately after release",
+    "no obvious code error",
+    "a limit or setting behaves differently"
+   ],
+   "likely_causes": [
+    "config file or template changed a value",
+    "default applied because a key was renamed"
+   ],
+   "diagnostic_checks": [
+    "diff runtime configuration against the last known-good release",
+    "list keys renamed or removed"
+   ],
+   "confirming_signals": [
+    "a value differs from the previous release"
+   ],
+   "disconfirming_signals": [
+    "configuration identical"
+   ],
+   "common_failed_actions": [
+    "rolling back code while config stays changed"
+   ],
+   "safe_remediation_guidance": [
+    "restore the known-good value",
+    "add config diff to release review"
+   ],
+   "warnings": [
+    "config often lives outside the code rollback path"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "kubernetes-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-DEPLOY-002",
+   "technology": "deployment",
+   "category": "env-vars",
+   "title": "Environment variable missing or renamed",
+   "symptoms": [
+    "service falls back to defaults",
+    "wrong URLs or limits",
+    "after pipeline or naming change"
+   ],
+   "likely_causes": [
+    "variable renamed in code but not in deploy config",
+    "build pipeline no longer sets it"
+   ],
+   "diagnostic_checks": [
+    "print the effective config at startup without secrets",
+    "compare with expected keys"
+   ],
+   "confirming_signals": [
+    "expected key absent in runtime environment"
+   ],
+   "disconfirming_signals": [
+    "key present with correct value"
+   ],
+   "common_failed_actions": [
+    "setting it by hand on one instance"
+   ],
+   "safe_remediation_guidance": [
+    "set the variable in deploy config",
+    "fail startup when required keys are missing"
+   ],
+   "warnings": [
+    "never print secret values when checking env"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "nodejs-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-DEPLOY-003",
+   "technology": "deployment",
+   "category": "feature-flags",
+   "title": "Feature flag default flipped",
+   "symptoms": [
+    "unfinished feature visible",
+    "errors in a new code path",
+    "no code deploy happened"
+   ],
+   "likely_causes": [
+    "flag service default changed",
+    "flag removed and default applied"
+   ],
+   "diagnostic_checks": [
+    "check flag values and audit log",
+    "compare with previous values"
+   ],
+   "confirming_signals": [
+    "flag changed at the incident start"
+   ],
+   "disconfirming_signals": [
+    "flags unchanged"
+   ],
+   "common_failed_actions": [
+    "rolling back the app"
+   ],
+   "safe_remediation_guidance": [
+    "set the flag explicitly",
+    "audit flags without explicit values"
+   ],
+   "warnings": [
+    "flag changes bypass normal deploy review"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "kubernetes-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-DEPLOY-004",
+   "technology": "deployment",
+   "category": "environments",
+   "title": "Service calls the wrong environment",
+   "symptoms": [
+    "requests go to staging endpoints",
+    "emails link to staging",
+    "after pipeline migration"
+   ],
+   "likely_causes": [
+    "build-time variable baked in from the wrong environment",
+    "copied config"
+   ],
+   "diagnostic_checks": [
+    "inspect the built artifact or runtime config for base URLs"
+   ],
+   "confirming_signals": [
+    "artifact contains staging URLs"
+   ],
+   "disconfirming_signals": [
+    "URLs correct"
+   ],
+   "common_failed_actions": [
+    "clearing caches"
+   ],
+   "safe_remediation_guidance": [
+    "rebuild with correct environment",
+    "add a check that fails on wrong environment"
+   ],
+   "warnings": [
+    "frontend bundles bake env at build time"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "nodejs-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-DEPLOY-005",
+   "technology": "deployment",
+   "category": "drift",
+   "title": "Canary healthy but full rollout fails",
+   "symptoms": [
+    "canary passed",
+    "errors after full rollout",
+    "environment-specific failure"
+   ],
+   "likely_causes": [
+    "configuration differs between canary and main environments",
+    "capacity only insufficient at full scale"
+   ],
+   "diagnostic_checks": [
+    "diff configuration between canary and production",
+    "compare resource usage at scale"
+   ],
+   "confirming_signals": [
+    "config difference found"
+   ],
+   "disconfirming_signals": [
+    "environments identical"
+   ],
+   "common_failed_actions": [
+    "restarting the failed pods"
+   ],
+   "safe_remediation_guidance": [
+    "align configuration",
+    "include config parity in canary checks"
+   ],
+   "warnings": [
+    "canaries only catch what they share with production"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "kubernetes-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-DEPLOY-006",
+   "technology": "infrastructure",
+   "category": "iac",
+   "title": "Infrastructure change removed a rule",
+   "symptoms": [
+    "services cannot reach each other",
+    "after infrastructure apply",
+    "timeouts not errors"
+   ],
+   "likely_causes": [
+    "firewall or security group rule removed by drift correction"
+   ],
+   "diagnostic_checks": [
+    "review the infrastructure plan output",
+    "compare network rules before and after"
+   ],
+   "confirming_signals": [
+    "rule missing after apply"
+   ],
+   "disconfirming_signals": [
+    "rules unchanged"
+   ],
+   "common_failed_actions": [
+    "restarting services"
+   ],
+   "safe_remediation_guidance": [
+    "restore rule in infrastructure code"
+   ],
+   "warnings": [
+    "manual changes are erased by the next apply"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "cloud-provider-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-DEPLOY-007",
+   "technology": "deployment",
+   "category": "rollback",
+   "title": "Rollback did not fix the incident",
+   "symptoms": [
+    "errors continue after rolling back",
+    "incident began near a deploy"
+   ],
+   "likely_causes": [
+    "cause is external or in data or configuration not covered by rollback",
+    "coincidental timing"
+   ],
+   "diagnostic_checks": [
+    "check dependencies, certificates and config independent of the release",
+    "compare error signatures"
+   ],
+   "confirming_signals": [
+    "errors reference a dependency or certificate"
+   ],
+   "disconfirming_signals": [
+    "errors stop after rollback"
+   ],
+   "common_failed_actions": [
+    "rolling back further versions blindly"
+   ],
+   "safe_remediation_guidance": [
+    "investigate non-code causes",
+    "roll forward once understood"
+   ],
+   "warnings": [
+    "timing correlation is not causation"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "rfc-http"
+    ]
+   }
+  },
+  {
+   "id": "KB-DEPLOY-008",
+   "technology": "database",
+   "category": "migrations",
+   "title": "New code incompatible with database schema",
+   "symptoms": [
+    "column does not exist errors",
+    "errors on some instances during rollout"
+   ],
+   "likely_causes": [
+    "code deployed before migration or migration not backward compatible"
+   ],
+   "diagnostic_checks": [
+    "check migration status versus code version on each instance"
+   ],
+   "confirming_signals": [
+    "missing column or table errors"
+   ],
+   "disconfirming_signals": [
+    "schema matches code"
+   ],
+   "common_failed_actions": [
+    "rolling back code after an irreversible migration"
+   ],
+   "safe_remediation_guidance": [
+    "use expand and contract migrations"
+   ],
+   "warnings": [
+    "mixed versions run together during rollouts"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "postgresql-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-DEPLOY-009",
+   "technology": "security",
+   "category": "secrets",
+   "title": "Credential rotated but one consumer not updated",
+   "symptoms": [
+    "one service gets 401 or authentication failed",
+    "after credential rotation",
+    "others fine"
+   ],
+   "likely_causes": [
+    "service still using old credential from its own secret store"
+   ],
+   "diagnostic_checks": [
+    "list every consumer of the credential",
+    "check which ones received the new value"
+   ],
+   "confirming_signals": [
+    "failing service has old credential"
+   ],
+   "disconfirming_signals": [
+    "all consumers updated"
+   ],
+   "common_failed_actions": [
+    "rotating again"
+   ],
+   "safe_remediation_guidance": [
+    "update the missed consumer",
+    "keep overlap window during rotation"
+   ],
+   "warnings": [
+    "never paste credentials into tickets or chat"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "rfc-oauth"
+    ]
+   }
+  },
+  {
+   "id": "KB-DEPLOY-010",
+   "technology": "dependencies",
+   "category": "upgrades",
+   "title": "Dependency or framework upgrade changed behaviour",
+   "symptoms": [
+    "subtle failures after dependency bump",
+    "signature or parsing errors",
+    "tests passed"
+   ],
+   "likely_causes": [
+    "default behaviour changed in library",
+    "transitive dependency updated"
+   ],
+   "diagnostic_checks": [
+    "diff lockfile",
+    "read changelog of changed libraries",
+    "reproduce with old version"
+   ],
+   "confirming_signals": [
+    "behaviour differs between versions"
+   ],
+   "disconfirming_signals": [
+    "same behaviour"
+   ],
+   "common_failed_actions": [
+    "upgrading further"
+   ],
+   "safe_remediation_guidance": [
+    "pin the working version or adapt code to new defaults"
+   ],
+   "warnings": [
+    "lockfiles prevent surprise transitive upgrades"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "nodejs-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-DEPLOY-011",
+   "technology": "runtime",
+   "category": "time",
+   "title": "Timezone or daylight saving time bug",
+   "symptoms": [
+    "jobs run an hour early or late",
+    "failures after daylight saving change",
+    "date boundaries wrong"
+   ],
+   "likely_causes": [
+    "local time used where UTC was needed",
+    "scheduler timezone differs from server"
+   ],
+   "diagnostic_checks": [
+    "compare scheduler timezone with job expectations",
+    "check timestamps around the change"
+   ],
+   "confirming_signals": [
+    "failures cluster around clock changes"
+   ],
+   "disconfirming_signals": [
+    "no correlation with clock changes"
+   ],
+   "common_failed_actions": [
+    "shifting times by hand"
+   ],
+   "safe_remediation_guidance": [
+    "store and schedule in UTC"
+   ],
+   "warnings": [
+    "some hours do not exist or repeat on change days"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "python-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-GIT-001",
+   "technology": "git",
+   "category": "deployment",
+   "title": "Wrong commit or branch deployed",
+   "symptoms": [
+    "expected fix not present in production",
+    "version string unexpected"
+   ],
+   "likely_causes": [
+    "pipeline built from wrong branch",
+    "tag points to old commit"
+   ],
+   "diagnostic_checks": [
+    "compare deployed commit hash with the intended one"
+   ],
+   "confirming_signals": [
+    "hashes differ"
+   ],
+   "disconfirming_signals": [
+    "hashes match"
+   ],
+   "common_failed_actions": [
+    "redeploying same pipeline without checking"
+   ],
+   "safe_remediation_guidance": [
+    "deploy the intended commit",
+    "show commit hash in health endpoint"
+   ],
+   "warnings": [
+    "moving tags breaks traceability"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "git-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-DNS-001",
+   "technology": "dns",
+   "category": "resolution",
+   "title": "Hostname does not resolve after DNS change",
+   "symptoms": [
+    "NXDOMAIN or could not resolve host",
+    "failures after DNS migration",
+    "some resolvers fine"
+   ],
+   "likely_causes": [
+    "record missing at new provider",
+    "delegation or nameserver change incomplete"
+   ],
+   "diagnostic_checks": [
+    "query each authoritative nameserver directly",
+    "compare records with the old zone"
+   ],
+   "confirming_signals": [
+    "record missing on authoritative servers"
+   ],
+   "disconfirming_signals": [
+    "record present everywhere"
+   ],
+   "common_failed_actions": [
+    "flushing only the local cache"
+   ],
+   "safe_remediation_guidance": [
+    "recreate the missing record",
+    "complete delegation"
+   ],
+   "warnings": [
+    "negative answers are cached too"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "rfc-dns"
+    ]
+   }
+  },
+  {
+   "id": "KB-DNS-002",
+   "technology": "dns",
+   "category": "propagation",
+   "title": "Stale DNS answers after a record change",
+   "symptoms": [
+    "some users reach the old address",
+    "works for others",
+    "after IP change"
+   ],
+   "likely_causes": [
+    "long TTL on the old record",
+    "resolvers caching"
+   ],
+   "diagnostic_checks": [
+    "check TTL of the old record",
+    "query several public resolvers"
+   ],
+   "confirming_signals": [
+    "resolvers return old address within TTL"
+   ],
+   "disconfirming_signals": [
+    "all resolvers return new address"
+   ],
+   "common_failed_actions": [
+    "changing the record repeatedly"
+   ],
+   "safe_remediation_guidance": [
+    "keep old target serving until TTL expires",
+    "lower TTL before planned changes"
+   ],
+   "warnings": [
+    "some clients ignore TTLs"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "rfc-dns"
+    ]
+   }
+  },
+  {
+   "id": "KB-DNS-003",
+   "technology": "dns",
+   "category": "outage",
+   "title": "DNS provider outage",
+   "symptoms": [
+    "site unreachable for some users",
+    "lookups time out",
+    "provider status degraded"
+   ],
+   "likely_causes": [
+    "single authoritative DNS provider failing"
+   ],
+   "diagnostic_checks": [
+    "query authoritative servers",
+    "check provider status page"
+   ],
+   "confirming_signals": [
+    "authoritative servers not answering"
+   ],
+   "disconfirming_signals": [
+    "authoritative servers answering"
+   ],
+   "common_failed_actions": [
+    "lowering TTLs during the outage"
+   ],
+   "safe_remediation_guidance": [
+    "add a secondary DNS provider with synced records"
+   ],
+   "warnings": [
+    "registrar nameserver changes take time"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "rfc-dns"
+    ]
+   }
+  },
+  {
+   "id": "KB-DNS-004",
+   "technology": "dns",
+   "category": "internal",
+   "title": "Split-horizon DNS returns wrong internal address",
+   "symptoms": [
+    "service reachable externally but not internally",
+    "internal resolver differs"
+   ],
+   "likely_causes": [
+    "internal zone not updated",
+    "conditional forwarding wrong"
+   ],
+   "diagnostic_checks": [
+    "resolve from inside and outside the network and compare"
+   ],
+   "confirming_signals": [
+    "internal answer outdated"
+   ],
+   "disconfirming_signals": [
+    "answers match"
+   ],
+   "common_failed_actions": [
+    "editing hosts files on servers"
+   ],
+   "safe_remediation_guidance": [
+    "update internal zone"
+   ],
+   "warnings": [
+    "hosts file overrides are forgotten"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "rfc-dns"
+    ]
+   }
+  },
+  {
+   "id": "KB-TLS-001",
+   "technology": "tls",
+   "category": "certificate-expiry",
+   "title": "Certificate expired",
+   "symptoms": [
+    "certificate has expired errors",
+    "browsers warn",
+    "service-to-service calls fail at once"
+   ],
+   "likely_causes": [
+    "automatic renewal failed",
+    "renewal validation record removed",
+    "certificate not reloaded after renewal"
+   ],
+   "diagnostic_checks": [
+    "check certificate expiry date on the live endpoint",
+    "check renewal job logs and validation"
+   ],
+   "confirming_signals": [
+    "live certificate not after date is in the past"
+   ],
+   "disconfirming_signals": [
+    "live certificate valid"
+   ],
+   "common_failed_actions": [
+    "rolling back unrelated deploys"
+   ],
+   "safe_remediation_guidance": [
+    "renew and reload the certificate",
+    "fix renewal validation",
+    "alert well before expiry"
+   ],
+   "warnings": [
+    "internal dependency certificates expire unnoticed"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "openssl-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-TLS-002",
+   "technology": "tls",
+   "category": "chain",
+   "title": "Incomplete certificate chain",
+   "symptoms": [
+    "unable to verify the first certificate",
+    "works in browsers but fails in some clients",
+    "after load balancer change"
+   ],
+   "likely_causes": [
+    "intermediate certificate not installed"
+   ],
+   "diagnostic_checks": [
+    "inspect the presented chain with a strict client"
+   ],
+   "confirming_signals": [
+    "only the leaf certificate is presented"
+   ],
+   "disconfirming_signals": [
+    "full chain presented"
+   ],
+   "common_failed_actions": [
+    "reissuing the certificate"
+   ],
+   "safe_remediation_guidance": [
+    "install the full chain"
+   ],
+   "warnings": [
+    "browsers may hide chain problems by caching intermediates"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "openssl-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-TLS-003",
+   "technology": "tls",
+   "category": "hostname",
+   "title": "Hostname mismatch in certificate",
+   "symptoms": [
+    "hostname does not match certificate",
+    "after adding a domain",
+    "only one hostname fails"
+   ],
+   "likely_causes": [
+    "certificate lacks the name in subject alternative names"
+   ],
+   "diagnostic_checks": [
+    "list SAN entries on the presented certificate"
+   ],
+   "confirming_signals": [
+    "failing hostname not in SANs"
+   ],
+   "disconfirming_signals": [
+    "hostname present"
+   ],
+   "common_failed_actions": [
+    "disabling verification"
+   ],
+   "safe_remediation_guidance": [
+    "issue a certificate including the hostname"
+   ],
+   "warnings": [
+    "disabling verification exposes traffic to interception"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "openssl-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-TLS-004",
+   "technology": "tls",
+   "category": "pinning",
+   "title": "Mobile apps fail after certificate authority change",
+   "symptoms": [
+    "mobile apps cannot connect",
+    "browsers fine",
+    "after certificate renewal with new CA"
+   ],
+   "likely_causes": [
+    "apps pin the old CA or key"
+   ],
+   "diagnostic_checks": [
+    "compare pinned keys in the app with the new certificate chain"
+   ],
+   "confirming_signals": [
+    "new chain not in pin set"
+   ],
+   "disconfirming_signals": [
+    "pins match"
+   ],
+   "common_failed_actions": [
+    "restarting the API"
+   ],
+   "safe_remediation_guidance": [
+    "reissue from the pinned CA",
+    "ship pin updates with overlap"
+   ],
+   "warnings": [
+    "pin changes need app releases in advance"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "openssl-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-TLS-005",
+   "technology": "tls",
+   "category": "mtls",
+   "title": "mTLS failures after CA rotation",
+   "symptoms": [
+    "unknown certificate authority errors between services",
+    "only some service pairs fail"
+   ],
+   "likely_causes": [
+    "trust bundle not updated everywhere"
+   ],
+   "diagnostic_checks": [
+    "check which trust bundle each failing service loads"
+   ],
+   "confirming_signals": [
+    "failing services have old bundle"
+   ],
+   "disconfirming_signals": [
+    "all bundles current"
+   ],
+   "common_failed_actions": [
+    "restarting one service at a time without updating bundles"
+   ],
+   "safe_remediation_guidance": [
+    "distribute a bundle containing old and new CA during rotation"
+   ],
+   "warnings": [
+    "rotating without overlap breaks traffic"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "openssl-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-TLS-006",
+   "technology": "tls",
+   "category": "protocol",
+   "title": "TLS handshake failure: protocol or cipher mismatch",
+   "symptoms": [
+    "handshake failure",
+    "after hardening TLS settings",
+    "old clients fail"
+   ],
+   "likely_causes": [
+    "server disabled protocols or ciphers clients need"
+   ],
+   "diagnostic_checks": [
+    "test handshake with the failing client's protocol versions"
+   ],
+   "confirming_signals": [
+    "no shared protocol or cipher"
+   ],
+   "disconfirming_signals": [
+    "handshake succeeds with those settings"
+   ],
+   "common_failed_actions": [
+    "re-enabling all old protocols"
+   ],
+   "safe_remediation_guidance": [
+    "support the minimum needed",
+    "upgrade clients"
+   ],
+   "warnings": [
+    "weak protocols have known attacks"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "openssl-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-TLS-007",
+   "technology": "tls",
+   "category": "renewal",
+   "title": "Certificate renewals hitting CA rate limits",
+   "symptoms": [
+    "renewals rejected",
+    "rate limit errors from certificate authority",
+    "many domains renewing at once"
+   ],
+   "likely_causes": [
+    "renewal loop or mass reissue exceeded limits"
+   ],
+   "diagnostic_checks": [
+    "check renewal logs for rate limit errors",
+    "count issuance attempts"
+   ],
+   "confirming_signals": [
+    "rate limit errors"
+   ],
+   "disconfirming_signals": [
+    "no issuance errors"
+   ],
+   "common_failed_actions": [
+    "retrying all domains immediately"
+   ],
+   "safe_remediation_guidance": [
+    "fix the loop",
+    "stagger renewals"
+   ],
+   "warnings": [
+    "limits reset slowly"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "openssl-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-AUTH-001",
+   "technology": "auth",
+   "category": "clock-skew",
+   "title": "Tokens rejected as not yet valid or expired: clock skew",
+   "symptoms": [
+    "token not yet valid or expired errors",
+    "after server rebuild",
+    "intermittent by host"
+   ],
+   "likely_causes": [
+    "time synchronisation disabled",
+    "clock drift on some hosts"
+   ],
+   "diagnostic_checks": [
+    "compare clocks across hosts",
+    "check time sync service"
+   ],
+   "confirming_signals": [
+    "clock offset of minutes on failing hosts"
+   ],
+   "disconfirming_signals": [
+    "clocks in sync"
+   ],
+   "common_failed_actions": [
+    "extending token lifetime"
+   ],
+   "safe_remediation_guidance": [
+    "enable time synchronisation"
+   ],
+   "warnings": [
+    "allowing big skew weakens token security"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "rfc-oauth"
+    ]
+   }
+  },
+  {
+   "id": "KB-AUTH-002",
+   "technology": "auth",
+   "category": "jwt",
+   "title": "JWT signature invalid after signing key rotation",
+   "symptoms": [
+    "invalid signature errors",
+    "about a fraction of logins fail",
+    "after key rotation"
+   ],
+   "likely_causes": [
+    "some issuers or verifiers still use the old key",
+    "kid not published in key set"
+   ],
+   "diagnostic_checks": [
+    "decode failing tokens and check kid",
+    "compare with published keys on every instance"
+   ],
+   "confirming_signals": [
+    "kid unknown to some verifiers"
+   ],
+   "disconfirming_signals": [
+    "all instances share key set"
+   ],
+   "common_failed_actions": [
+    "clearing token caches"
+   ],
+   "safe_remediation_guidance": [
+    "publish old and new keys during overlap",
+    "update every instance"
+   ],
+   "warnings": [
+    "never log token contents in full"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "rfc-oauth"
+    ]
+   }
+  },
+  {
+   "id": "KB-AUTH-003",
+   "technology": "oauth",
+   "category": "redirect",
+   "title": "OAuth redirect URI mismatch",
+   "symptoms": [
+    "redirect_uri mismatch error at login",
+    "after domain or path change"
+   ],
+   "likely_causes": [
+    "registered redirect URI differs from the one sent"
+   ],
+   "diagnostic_checks": [
+    "compare the redirect URI in the authorize request with the registered list"
+   ],
+   "confirming_signals": [
+    "exact string differs"
+   ],
+   "disconfirming_signals": [
+    "strings match exactly"
+   ],
+   "common_failed_actions": [
+    "adding wildcards"
+   ],
+   "safe_remediation_guidance": [
+    "register the exact new URI"
+   ],
+   "warnings": [
+    "wildcard redirects enable token theft"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "rfc-oauth"
+    ]
+   }
+  },
+  {
+   "id": "KB-AUTH-004",
+   "technology": "oauth",
+   "category": "tokens",
+   "title": "Access token refresh failing",
+   "symptoms": [
+    "users logged out after token lifetime",
+    "refresh returns invalid grant"
+   ],
+   "likely_causes": [
+    "refresh token revoked or rotated",
+    "client secret changed",
+    "refresh token reuse detection"
+   ],
+   "diagnostic_checks": [
+    "inspect refresh error codes",
+    "check client credentials and rotation settings"
+   ],
+   "confirming_signals": [
+    "invalid grant for rotated refresh tokens"
+   ],
+   "disconfirming_signals": [
+    "refresh succeeds"
+   ],
+   "common_failed_actions": [
+    "lengthening access token lifetime"
+   ],
+   "safe_remediation_guidance": [
+    "store rotated refresh tokens correctly",
+    "update client secret"
+   ],
+   "warnings": [
+    "long-lived tokens raise risk"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "rfc-oauth"
+    ]
+   }
+  },
+  {
+   "id": "KB-AUTH-005",
+   "technology": "oauth",
+   "category": "provider",
+   "title": "Identity provider or JWKS endpoint unavailable",
+   "symptoms": [
+    "logins fail",
+    "token validation fails to fetch keys",
+    "provider status degraded"
+   ],
+   "likely_causes": [
+    "identity provider outage",
+    "network egress blocked to JWKS endpoint"
+   ],
+   "diagnostic_checks": [
+    "fetch the discovery and JWKS URLs from the service host"
+   ],
+   "confirming_signals": [
+    "fetch fails or times out"
+   ],
+   "disconfirming_signals": [
+    "keys fetched fine"
+   ],
+   "common_failed_actions": [
+    "disabling token validation"
+   ],
+   "safe_remediation_guidance": [
+    "cache keys with sensible refresh",
+    "fail gracefully during provider outages"
+   ],
+   "warnings": [
+    "never skip signature validation"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "rfc-oauth"
+    ]
+   }
+  },
+  {
+   "id": "KB-AUTH-006",
+   "technology": "auth",
+   "category": "sessions",
+   "title": "Users logged out randomly",
+   "symptoms": [
+    "sessions lost",
+    "users must log in again",
+    "no deploy correlation"
+   ],
+   "likely_causes": [
+    "session store evicting keys",
+    "session secret changed",
+    "load balancer without shared sessions"
+   ],
+   "diagnostic_checks": [
+    "check session store evictions",
+    "check session secret consistency across instances"
+   ],
+   "confirming_signals": [
+    "evictions or differing secrets"
+   ],
+   "disconfirming_signals": [
+    "sessions stored and secrets consistent"
+   ],
+   "common_failed_actions": [
+    "extending cookie lifetime"
+   ],
+   "safe_remediation_guidance": [
+    "dedicated session store without eviction",
+    "share secret"
+   ],
+   "warnings": [
+    "rotating session secrets logs everyone out"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "redis-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-AUTH-007",
+   "technology": "auth",
+   "category": "cookies",
+   "title": "Login breaks after cookie attribute change",
+   "symptoms": [
+    "login loops",
+    "cookie not sent on cross-site requests",
+    "after browser or code change"
+   ],
+   "likely_causes": [
+    "SameSite or Secure attributes block the cookie"
+   ],
+   "diagnostic_checks": [
+    "inspect Set-Cookie attributes and browser warnings"
+   ],
+   "confirming_signals": [
+    "cookie blocked by SameSite policy"
+   ],
+   "disconfirming_signals": [
+    "cookie sent"
+   ],
+   "common_failed_actions": [
+    "clearing browser data"
+   ],
+   "safe_remediation_guidance": [
+    "set SameSite=None with Secure for cross-site flows, or keep flows same-site"
+   ],
+   "warnings": [
+    "SameSite=None without Secure is rejected"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "mdn-http"
+    ]
+   }
+  },
+  {
+   "id": "KB-AUTH-008",
+   "technology": "auth",
+   "category": "saml",
+   "title": "SAML or SSO assertion rejected",
+   "symptoms": [
+    "SSO fails for enterprise users",
+    "assertion invalid",
+    "after certificate or clock change"
+   ],
+   "likely_causes": [
+    "IdP signing certificate rotated",
+    "clock skew",
+    "audience mismatch"
+   ],
+   "diagnostic_checks": [
+    "check assertion validation errors",
+    "compare IdP cert with configured cert"
+   ],
+   "confirming_signals": [
+    "signature or time validation error"
+   ],
+   "disconfirming_signals": [
+    "validation passes"
+   ],
+   "common_failed_actions": [
+    "re-uploading metadata repeatedly without checking the error"
+   ],
+   "safe_remediation_guidance": [
+    "update IdP certificate",
+    "fix clocks"
+   ],
+   "warnings": [
+    "IdP cert rotations need coordination"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "rfc-oauth"
+    ]
+   }
+  },
+  {
+   "id": "KB-AUTH-009",
+   "technology": "auth",
+   "category": "rate-limit",
+   "title": "Legitimate users locked out by login rate limiting",
+   "symptoms": [
+    "too many attempts errors for many users",
+    "users behind shared office IP"
+   ],
+   "likely_causes": [
+    "limit keyed only by IP"
+   ],
+   "diagnostic_checks": [
+    "group lockouts by source IP and account"
+   ],
+   "confirming_signals": [
+    "many accounts behind one IP locked"
+   ],
+   "disconfirming_signals": [
+    "lockouts spread across IPs"
+   ],
+   "common_failed_actions": [
+    "raising the global limit"
+   ],
+   "safe_remediation_guidance": [
+    "key limits on account plus IP"
+   ],
+   "warnings": [
+    "loosening limits helps attackers"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "rfc-http"
+    ]
+   }
+  },
+  {
+   "id": "KB-PROXY-001",
+   "technology": "nginx",
+   "category": "proxy",
+   "title": "Upstream timed out while reading response header",
+   "symptoms": [
+    "proxy logs upstream timed out",
+    "504 errors",
+    "slow endpoints"
+   ],
+   "likely_causes": [
+    "application slower than proxy read timeout"
+   ],
+   "diagnostic_checks": [
+    "compare app latency with proxy timeout",
+    "find slow dependency"
+   ],
+   "confirming_signals": [
+    "app latency exceeds timeout"
+   ],
+   "disconfirming_signals": [
+    "app fast"
+   ],
+   "common_failed_actions": [
+    "raising timeouts only"
+   ],
+   "safe_remediation_guidance": [
+    "fix slow path",
+    "set explicit timeouts per route"
+   ],
+   "warnings": [
+    "long timeouts tie up connections"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "nginx-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-PROXY-002",
+   "technology": "nginx",
+   "category": "proxy",
+   "title": "Upstream sent too big header",
+   "symptoms": [
+    "502 with upstream sent too big header",
+    "large cookies or auth headers"
+   ],
+   "likely_causes": [
+    "proxy header buffer too small for response headers"
+   ],
+   "diagnostic_checks": [
+    "measure response header size from the app"
+   ],
+   "confirming_signals": [
+    "headers exceed buffer"
+   ],
+   "disconfirming_signals": [
+    "headers small"
+   ],
+   "common_failed_actions": [
+    "restarting nginx"
+   ],
+   "safe_remediation_guidance": [
+    "reduce header size or raise buffer size moderately"
+   ],
+   "warnings": [
+    "large headers slow every request"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "nginx-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-PROXY-003",
+   "technology": "nginx",
+   "category": "capacity",
+   "title": "Proxy worker connections exhausted",
+   "symptoms": [
+    "worker connections are not enough",
+    "connections refused at the proxy",
+    "high concurrency"
+   ],
+   "likely_causes": [
+    "worker connection limit too low",
+    "long-lived connections"
+   ],
+   "diagnostic_checks": [
+    "check proxy connection metrics against limits"
+   ],
+   "confirming_signals": [
+    "connections at limit"
+   ],
+   "disconfirming_signals": [
+    "plenty of headroom"
+   ],
+   "common_failed_actions": [
+    "scaling the backend only"
+   ],
+   "safe_remediation_guidance": [
+    "raise worker connection limits and file descriptor limits"
+   ],
+   "warnings": [
+    "descriptor limits must match"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "nginx-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-PROXY-004",
+   "technology": "load-balancer",
+   "category": "health-checks",
+   "title": "Load balancer marks all targets unhealthy",
+   "symptoms": [
+    "all targets unhealthy",
+    "503 from load balancer",
+    "after health check or port change"
+   ],
+   "likely_causes": [
+    "health check path or port changed",
+    "health endpoint depends on a failing dependency"
+   ],
+   "diagnostic_checks": [
+    "call the health endpoint from the load balancer network",
+    "compare path and port"
+   ],
+   "confirming_signals": [
+    "health endpoint fails from LB"
+   ],
+   "disconfirming_signals": [
+    "health endpoint succeeds"
+   ],
+   "common_failed_actions": [
+    "disabling health checks"
+   ],
+   "safe_remediation_guidance": [
+    "fix health path",
+    "keep health checks shallow"
+   ],
+   "warnings": [
+    "deep health checks can fail every target together"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "cloud-provider-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-PROXY-005",
+   "technology": "load-balancer",
+   "category": "sessions",
+   "title": "Users bounce between instances losing state",
+   "symptoms": [
+    "users lose state between requests",
+    "works with one instance"
+   ],
+   "likely_causes": [
+    "in-memory session state without affinity or shared store"
+   ],
+   "diagnostic_checks": [
+    "check where session state is stored",
+    "test with affinity"
+   ],
+   "confirming_signals": [
+    "state is instance-local"
+   ],
+   "disconfirming_signals": [
+    "shared store used"
+   ],
+   "common_failed_actions": [
+    "enabling affinity as permanent fix only"
+   ],
+   "safe_remediation_guidance": [
+    "move state to a shared store"
+   ],
+   "warnings": [
+    "affinity breaks during scaling"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "cloud-provider-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-PROXY-006",
+   "technology": "websocket",
+   "category": "proxy",
+   "title": "WebSocket connections fail behind proxy",
+   "symptoms": [
+    "websocket upgrade fails",
+    "falls back to polling",
+    "after proxy change"
+   ],
+   "likely_causes": [
+    "proxy not forwarding Upgrade and Connection headers",
+    "idle timeout closes sockets"
+   ],
+   "diagnostic_checks": [
+    "inspect upgrade request and response through the proxy"
+   ],
+   "confirming_signals": [
+    "no 101 switching protocols response"
+   ],
+   "disconfirming_signals": [
+    "upgrade succeeds"
+   ],
+   "common_failed_actions": [
+    "restarting clients"
+   ],
+   "safe_remediation_guidance": [
+    "forward upgrade headers",
+    "raise idle timeout for socket routes"
+   ],
+   "warnings": [
+    "load balancers may cut idle sockets"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "nginx-docs",
+     "rfc-http"
+    ]
+   }
+  },
+  {
+   "id": "KB-PROXY-007",
+   "technology": "cdn",
+   "category": "origin",
+   "title": "CDN returns 5xx because origin is unreachable",
+   "symptoms": [
+    "CDN error pages",
+    "origin healthy from inside network",
+    "after firewall change"
+   ],
+   "likely_causes": [
+    "origin firewall blocks CDN address ranges",
+    "origin certificate invalid for CDN"
+   ],
+   "diagnostic_checks": [
+    "test origin from CDN egress",
+    "check origin TLS settings"
+   ],
+   "confirming_signals": [
+    "CDN cannot connect or TLS fails"
+   ],
+   "disconfirming_signals": [
+    "CDN connects"
+   ],
+   "common_failed_actions": [
+    "purging cache"
+   ],
+   "safe_remediation_guidance": [
+    "allow CDN ranges",
+    "fix origin certificate"
+   ],
+   "warnings": [
+    "CDN IP ranges change over time"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "cloud-provider-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-QUEUE-001",
+   "technology": "queues",
+   "category": "backlog",
+   "title": "Queue backlog growing",
+   "symptoms": [
+    "queue depth rising",
+    "delayed jobs",
+    "workers busy or idle"
+   ],
+   "likely_causes": [
+    "consumer throughput dropped (concurrency setting, slow dependency)",
+    "producer surge"
+   ],
+   "diagnostic_checks": [
+    "compare produce versus consume rate",
+    "check worker concurrency and per-job duration"
+   ],
+   "confirming_signals": [
+    "consume rate fell after a change"
+   ],
+   "disconfirming_signals": [
+    "consume rate steady while produce rate rose"
+   ],
+   "common_failed_actions": [
+    "adding workers when each only processes one job at a time"
+   ],
+   "safe_remediation_guidance": [
+    "restore concurrency or fix slow dependency",
+    "scale consumers"
+   ],
+   "warnings": [
+    "scaling consumers can overload shared dependencies"
+   ],
+   "example_fix": {
+    "label": "GENERAL EXAMPLE",
+    "diff": "- WORKER_CONCURRENCY=<current value>\n+ WORKER_CONCURRENCY=<previous working value>",
+    "placeholders": true
+   },
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "kubernetes-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-QUEUE-002",
+   "technology": "queues",
+   "category": "poison",
+   "title": "Poison message crashing consumers",
+   "symptoms": [
+    "consumers crash repeatedly",
+    "same message redelivered",
+    "backlog stuck"
+   ],
+   "likely_causes": [
+    "malformed message the consumer cannot handle",
+    "no dead-letter queue"
+   ],
+   "diagnostic_checks": [
+    "find the message id present in every crash"
+   ],
+   "confirming_signals": [
+    "same message in each crash"
+   ],
+   "disconfirming_signals": [
+    "crashes on different messages"
+   ],
+   "common_failed_actions": [
+    "adding more consumers"
+   ],
+   "safe_remediation_guidance": [
+    "move the message to a dead-letter queue",
+    "fix handling"
+   ],
+   "warnings": [
+    "without DLQ one message blocks a queue"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "kubernetes-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-QUEUE-003",
+   "technology": "queues",
+   "category": "duplicates",
+   "title": "Messages processed twice: visibility timeout",
+   "symptoms": [
+    "duplicate side effects",
+    "same message processed twice",
+    "processing got slower"
+   ],
+   "likely_causes": [
+    "processing exceeds visibility timeout so message redelivered"
+   ],
+   "diagnostic_checks": [
+    "compare processing time with visibility timeout"
+   ],
+   "confirming_signals": [
+    "processing time above timeout"
+   ],
+   "disconfirming_signals": [
+    "processing well below timeout"
+   ],
+   "common_failed_actions": [
+    "ignoring duplicates"
+   ],
+   "safe_remediation_guidance": [
+    "raise timeout or extend it while processing",
+    "make consumers idempotent"
+   ],
+   "warnings": [
+    "at-least-once delivery requires idempotency"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "kubernetes-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-QUEUE-004",
+   "technology": "kafka",
+   "category": "consumers",
+   "title": "Consumer lag and rebalance storm",
+   "symptoms": [
+    "consumer group rebalancing constantly",
+    "lag growing",
+    "partitions unassigned"
+   ],
+   "likely_causes": [
+    "processing exceeds max poll interval",
+    "consumers crashing"
+   ],
+   "diagnostic_checks": [
+    "check rebalance frequency and poll interval against batch processing time"
+   ],
+   "confirming_signals": [
+    "rebalances follow slow batches"
+   ],
+   "disconfirming_signals": [
+    "stable group"
+   ],
+   "common_failed_actions": [
+    "restarting consumers"
+   ],
+   "safe_remediation_guidance": [
+    "smaller batches",
+    "longer poll interval",
+    "faster processing"
+   ],
+   "warnings": [
+    "rebalances pause all partitions"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "kubernetes-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-QUEUE-005",
+   "technology": "kafka",
+   "category": "partitions",
+   "title": "Uneven partition load",
+   "symptoms": [
+    "one consumer lagging while others idle",
+    "hot key"
+   ],
+   "likely_causes": [
+    "key distribution skewed to one partition"
+   ],
+   "diagnostic_checks": [
+    "compare lag and throughput per partition",
+    "inspect key distribution"
+   ],
+   "confirming_signals": [
+    "one partition much hotter"
+   ],
+   "disconfirming_signals": [
+    "even distribution"
+   ],
+   "common_failed_actions": [
+    "adding consumers beyond partition count"
+   ],
+   "safe_remediation_guidance": [
+    "improve key distribution",
+    "add partitions carefully"
+   ],
+   "warnings": [
+    "changing partition count affects ordering"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "kubernetes-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-QUEUE-006",
+   "technology": "rabbitmq",
+   "category": "consumers",
+   "title": "Messages unacknowledged piling up",
+   "symptoms": [
+    "unacked message count high",
+    "consumer stalled",
+    "memory alarm on broker"
+   ],
+   "likely_causes": [
+    "prefetch too high with slow consumers",
+    "consumer not acknowledging on error path"
+   ],
+   "diagnostic_checks": [
+    "check unacked counts per consumer",
+    "check ack paths"
+   ],
+   "confirming_signals": [
+    "unacked concentrated on one consumer"
+   ],
+   "disconfirming_signals": [
+    "acks flowing"
+   ],
+   "common_failed_actions": [
+    "restarting broker"
+   ],
+   "safe_remediation_guidance": [
+    "lower prefetch",
+    "ack or reject on every path"
+   ],
+   "warnings": [
+    "broker memory alarms block publishers"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "kubernetes-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-QUEUE-007",
+   "technology": "queues",
+   "category": "dlq",
+   "title": "Dead-letter queue filling up",
+   "symptoms": [
+    "DLQ depth rising",
+    "business events missing"
+   ],
+   "likely_causes": [
+    "new message schema",
+    "downstream validation failing"
+   ],
+   "diagnostic_checks": [
+    "sample DLQ messages and their failure reasons"
+   ],
+   "confirming_signals": [
+    "same failure reason across DLQ messages"
+   ],
+   "disconfirming_signals": [
+    "diverse reasons"
+   ],
+   "common_failed_actions": [
+    "purging the DLQ"
+   ],
+   "safe_remediation_guidance": [
+    "fix handling and replay DLQ"
+   ],
+   "warnings": [
+    "purging loses business events"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "kubernetes-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-CRON-001",
+   "technology": "cron",
+   "category": "scheduling",
+   "title": "Scheduled job did not run: stale lock",
+   "symptoms": [
+    "nightly job missing",
+    "scheduler says another instance holds the lock"
+   ],
+   "likely_causes": [
+    "crashed instance left a lock without expiry"
+   ],
+   "diagnostic_checks": [
+    "inspect lock key, owner and TTL"
+   ],
+   "confirming_signals": [
+    "lock exists without TTL and owner is gone"
+   ],
+   "disconfirming_signals": [
+    "no lock"
+   ],
+   "common_failed_actions": [
+    "restarting scheduler repeatedly"
+   ],
+   "safe_remediation_guidance": [
+    "clear stale lock",
+    "give locks an expiry"
+   ],
+   "warnings": [
+    "locks without expiry block forever"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "redis-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-CRON-002",
+   "technology": "cron",
+   "category": "overlap",
+   "title": "Scheduled jobs overlap and contend",
+   "symptoms": [
+    "two runs of the same job at once",
+    "locks and duplicate work",
+    "job slower than interval"
+   ],
+   "likely_causes": [
+    "job duration exceeds schedule interval"
+   ],
+   "diagnostic_checks": [
+    "compare job runtime with interval",
+    "check concurrency policy"
+   ],
+   "confirming_signals": [
+    "runs overlap"
+   ],
+   "disconfirming_signals": [
+    "runs finish before next start"
+   ],
+   "common_failed_actions": [
+    "shortening interval"
+   ],
+   "safe_remediation_guidance": [
+    "forbid concurrent runs",
+    "optimise job"
+   ],
+   "warnings": [
+    "overlapping jobs double database load"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "postgresql-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-CRON-003",
+   "technology": "cron",
+   "category": "load",
+   "title": "Latency spikes at scheduled times",
+   "symptoms": [
+    "spikes at the top of the hour or night",
+    "CPU spikes on shared nodes"
+   ],
+   "likely_causes": [
+    "scheduled job running on the same nodes as the API"
+   ],
+   "diagnostic_checks": [
+    "align spike timestamps with job schedules"
+   ],
+   "confirming_signals": [
+    "spikes match schedule"
+   ],
+   "disconfirming_signals": [
+    "no correlation"
+   ],
+   "common_failed_actions": [
+    "adding API replicas"
+   ],
+   "safe_remediation_guidance": [
+    "move jobs to separate nodes",
+    "set limits"
+   ],
+   "warnings": [
+    "many jobs scheduled at minute zero collide"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "kubernetes-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-WEBHOOK-001",
+   "technology": "webhooks",
+   "category": "signatures",
+   "title": "Incoming webhooks rejected: signature mismatch",
+   "symptoms": [
+    "every webhook rejected as invalid signature",
+    "after framework upgrade",
+    "secret unchanged"
+   ],
+   "likely_causes": [
+    "body modified before verification (parsing or re-serialisation)",
+    "wrong secret"
+   ],
+   "diagnostic_checks": [
+    "verify against the raw request body",
+    "confirm secret"
+   ],
+   "confirming_signals": [
+    "raw-body verification succeeds"
+   ],
+   "disconfirming_signals": [
+    "raw-body verification also fails (check secret)"
+   ],
+   "common_failed_actions": [
+    "rotating the secret"
+   ],
+   "safe_remediation_guidance": [
+    "verify signature on raw body",
+    "replay failed deliveries"
+   ],
+   "warnings": [
+    "never disable signature checks"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "rfc-http"
+    ]
+   }
+  },
+  {
+   "id": "KB-WEBHOOK-002",
+   "technology": "webhooks",
+   "category": "delivery",
+   "title": "Outgoing webhooks failing to deliver",
+   "symptoms": [
+    "partner reports missing events",
+    "retries piling up",
+    "timeouts to receiver"
+   ],
+   "likely_causes": [
+    "receiver down or slow",
+    "payload too large",
+    "DNS or TLS problem at receiver"
+   ],
+   "diagnostic_checks": [
+    "inspect delivery attempts and response codes"
+   ],
+   "confirming_signals": [
+    "consistent errors from receiver"
+   ],
+   "disconfirming_signals": [
+    "deliveries succeed"
+   ],
+   "common_failed_actions": [
+    "resending everything at once"
+   ],
+   "safe_remediation_guidance": [
+    "back off",
+    "notify receiver",
+    "replay after recovery"
+   ],
+   "warnings": [
+    "bulk replay can overwhelm receivers"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "rfc-http"
+    ]
+   }
+  },
+  {
+   "id": "KB-EXT-001",
+   "technology": "external",
+   "category": "outage",
+   "title": "Third-party provider outage",
+   "symptoms": [
+    "calls to one provider time out or fail",
+    "provider status page degraded",
+    "internal services healthy"
+   ],
+   "likely_causes": [
+    "provider regional outage"
+   ],
+   "diagnostic_checks": [
+    "check provider status page",
+    "test provider from multiple regions"
+   ],
+   "confirming_signals": [
+    "failures only on provider calls"
+   ],
+   "disconfirming_signals": [
+    "internal errors present"
+   ],
+   "common_failed_actions": [
+    "restarting internal services"
+   ],
+   "safe_remediation_guidance": [
+    "fail over to a secondary provider if available",
+    "queue work for retry",
+    "communicate degradation"
+   ],
+   "warnings": [
+    "fallbacks need regular testing"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "cloud-provider-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-EXT-002",
+   "technology": "external",
+   "category": "quota",
+   "title": "Third-party API quota exceeded",
+   "symptoms": [
+    "quota exceeded errors",
+    "failures began mid-day",
+    "traffic spike"
+   ],
+   "likely_causes": [
+    "daily or monthly quota reached"
+   ],
+   "diagnostic_checks": [
+    "check quota usage dashboard",
+    "correlate with traffic"
+   ],
+   "confirming_signals": [
+    "usage at quota"
+   ],
+   "disconfirming_signals": [
+    "usage low"
+   ],
+   "common_failed_actions": [
+    "retrying failed calls immediately"
+   ],
+   "safe_remediation_guidance": [
+    "raise quota",
+    "add caching and fallbacks"
+   ],
+   "warnings": [
+    "quota resets may be far away"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "rfc-http"
+    ]
+   }
+  },
+  {
+   "id": "KB-EXT-003",
+   "technology": "external",
+   "category": "api-changes",
+   "title": "Provider changed API response format",
+   "symptoms": [
+    "parse errors on provider responses",
+    "no change on our side"
+   ],
+   "likely_causes": [
+    "provider default API version changed"
+   ],
+   "diagnostic_checks": [
+    "compare recent responses with expected schema"
+   ],
+   "confirming_signals": [
+    "new fields or structure"
+   ],
+   "disconfirming_signals": [
+    "responses unchanged"
+   ],
+   "common_failed_actions": [
+    "retrying calls"
+   ],
+   "safe_remediation_guidance": [
+    "pin API version",
+    "update parser"
+   ],
+   "warnings": [
+    "unpinned versions change silently"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "rfc-http"
+    ]
+   }
+  },
+  {
+   "id": "KB-EXT-004",
+   "technology": "external",
+   "category": "messaging",
+   "title": "SMS or email not delivered",
+   "symptoms": [
+    "users do not receive codes or emails",
+    "provider accepts messages",
+    "country-specific"
+   ],
+   "likely_causes": [
+    "provider or carrier throttling",
+    "sender reputation",
+    "blocked content"
+   ],
+   "diagnostic_checks": [
+    "check delivery reports by country and provider"
+   ],
+   "confirming_signals": [
+    "failures concentrated on one route"
+   ],
+   "disconfirming_signals": [
+    "delivered normally"
+   ],
+   "common_failed_actions": [
+    "resending repeatedly"
+   ],
+   "safe_remediation_guidance": [
+    "switch route or provider",
+    "fix sender configuration"
+   ],
+   "warnings": [
+    "resending can trigger spam filters"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "cloud-provider-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-EXT-005",
+   "technology": "external",
+   "category": "timeouts",
+   "title": "Slow dependency without timeout stalls service",
+   "symptoms": [
+    "service hangs when a dependency is slow",
+    "thread pool full",
+    "no errors logged"
+   ],
+   "likely_causes": [
+    "missing client timeout"
+   ],
+   "diagnostic_checks": [
+    "check client timeout configuration",
+    "dump stacks to see waiting calls"
+   ],
+   "confirming_signals": [
+    "calls waiting indefinitely"
+   ],
+   "disconfirming_signals": [
+    "timeouts configured"
+   ],
+   "common_failed_actions": [
+    "restarting service"
+   ],
+   "safe_remediation_guidance": [
+    "add timeouts and circuit breakers"
+   ],
+   "warnings": [
+    "default client timeouts are often infinite"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "rfc-http"
+    ]
+   }
+  },
+  {
+   "id": "KB-EXT-006",
+   "technology": "external",
+   "category": "sdk",
+   "title": "Vendor SDK update broke integration",
+   "symptoms": [
+    "integration errors after dependency update",
+    "vendor unchanged"
+   ],
+   "likely_causes": [
+    "SDK changed defaults or removed options"
+   ],
+   "diagnostic_checks": [
+    "diff SDK versions",
+    "read release notes"
+   ],
+   "confirming_signals": [
+    "behaviour changed with SDK version"
+   ],
+   "disconfirming_signals": [
+    "same behaviour"
+   ],
+   "common_failed_actions": [
+    "upgrading more"
+   ],
+   "safe_remediation_guidance": [
+    "pin SDK",
+    "adapt code"
+   ],
+   "warnings": [
+    "auto-updating SDKs in production is risky"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "nodejs-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-EXT-007",
+   "technology": "cloud",
+   "category": "region",
+   "title": "Cloud region incident",
+   "symptoms": [
+    "many managed services degraded in one region",
+    "provider status incident"
+   ],
+   "likely_causes": [
+    "provider regional failure"
+   ],
+   "diagnostic_checks": [
+    "check provider status",
+    "compare regions"
+   ],
+   "confirming_signals": [
+    "only one region impacted"
+   ],
+   "disconfirming_signals": [
+    "all regions fine"
+   ],
+   "common_failed_actions": [
+    "debugging application code"
+   ],
+   "safe_remediation_guidance": [
+    "fail over to another region if prepared",
+    "reduce load"
+   ],
+   "warnings": [
+    "failover must be practised beforehand"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "cloud-provider-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-STOR-001",
+   "technology": "storage",
+   "category": "permissions",
+   "title": "Permission denied writing files after deploy",
+   "symptoms": [
+    "permission denied on write",
+    "after image or user change"
+   ],
+   "likely_causes": [
+    "process user changed",
+    "volume ownership mismatch"
+   ],
+   "diagnostic_checks": [
+    "check process user and directory ownership"
+   ],
+   "confirming_signals": [
+    "ownership mismatch"
+   ],
+   "disconfirming_signals": [
+    "permissions correct"
+   ],
+   "common_failed_actions": [
+    "chmod 777"
+   ],
+   "safe_remediation_guidance": [
+    "set correct ownership"
+   ],
+   "warnings": [
+    "world-writable paths are insecure"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "kubernetes-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-STOR-002",
+   "technology": "storage",
+   "category": "object-storage",
+   "title": "Object storage access denied",
+   "symptoms": [
+    "access denied on bucket operations",
+    "after policy or role change"
+   ],
+   "likely_causes": [
+    "role missing permission",
+    "bucket policy changed",
+    "wrong account"
+   ],
+   "diagnostic_checks": [
+    "check effective permissions of the role for the action"
+   ],
+   "confirming_signals": [
+    "permission missing"
+   ],
+   "disconfirming_signals": [
+    "permission present"
+   ],
+   "common_failed_actions": [
+    "making the bucket public"
+   ],
+   "safe_remediation_guidance": [
+    "grant the specific permission"
+   ],
+   "warnings": [
+    "public buckets leak data"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "cloud-provider-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-STOR-003",
+   "technology": "storage",
+   "category": "quota",
+   "title": "Object storage quota or lifecycle problem",
+   "symptoms": [
+    "uploads fail with quota exceeded",
+    "temporary objects accumulating"
+   ],
+   "likely_causes": [
+    "lifecycle cleanup rule removed"
+   ],
+   "diagnostic_checks": [
+    "check bucket size growth and lifecycle rules"
+   ],
+   "confirming_signals": [
+    "temp prefix huge and rule missing"
+   ],
+   "disconfirming_signals": [
+    "rules intact"
+   ],
+   "common_failed_actions": [
+    "raising quota only"
+   ],
+   "safe_remediation_guidance": [
+    "restore lifecycle rule"
+   ],
+   "warnings": [
+    "deleting objects is irreversible"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "cloud-provider-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-STOR-004",
+   "technology": "storage",
+   "category": "filesystem",
+   "title": "Read-only filesystem errors",
+   "symptoms": [
+    "read-only file system errors",
+    "after disk error or container hardening"
+   ],
+   "likely_causes": [
+    "filesystem remounted read-only after errors",
+    "read-only root filesystem setting"
+   ],
+   "diagnostic_checks": [
+    "check mount options and kernel messages"
+   ],
+   "confirming_signals": [
+    "mount is read-only"
+   ],
+   "disconfirming_signals": [
+    "mount read-write"
+   ],
+   "common_failed_actions": [
+    "restarting app repeatedly"
+   ],
+   "safe_remediation_guidance": [
+    "use writable volume for app data",
+    "repair disk"
+   ],
+   "warnings": [
+    "disk errors may mean data loss"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "kubernetes-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-STOR-005",
+   "technology": "storage",
+   "category": "backups",
+   "title": "Backups failing silently",
+   "symptoms": [
+    "restore test finds old backup",
+    "backup job failures unnoticed"
+   ],
+   "likely_causes": [
+    "target full",
+    "alert routing broken"
+   ],
+   "diagnostic_checks": [
+    "check last successful backup",
+    "check alert routing"
+   ],
+   "confirming_signals": [
+    "last success long ago"
+   ],
+   "disconfirming_signals": [
+    "recent success"
+   ],
+   "common_failed_actions": [
+    "assuming backups work"
+   ],
+   "safe_remediation_guidance": [
+    "fix target",
+    "route alerts",
+    "test restores regularly"
+   ],
+   "warnings": [
+    "untested backups are not backups"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "postgresql-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-SEC-001",
+   "technology": "security",
+   "category": "secrets",
+   "title": "Expired API key or client secret",
+   "symptoms": [
+    "authentication failed from one integration",
+    "on a date boundary"
+   ],
+   "likely_causes": [
+    "key or secret expiry date reached"
+   ],
+   "diagnostic_checks": [
+    "check expiry of the credential"
+   ],
+   "confirming_signals": [
+    "credential expired"
+   ],
+   "disconfirming_signals": [
+    "credential valid"
+   ],
+   "common_failed_actions": [
+    "retrying"
+   ],
+   "safe_remediation_guidance": [
+    "rotate credential",
+    "set expiry alerts"
+   ],
+   "warnings": [
+    "store secrets in a secret manager, not in code"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "cloud-provider-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-NODE-001",
+   "technology": "nodejs",
+   "category": "crashes",
+   "title": "Node.js process crashes on unhandled promise rejection",
+   "symptoms": [
+    "process exits with unhandled rejection",
+    "restarts",
+    "after code change"
+   ],
+   "likely_causes": [
+    "missing await or catch on a failing promise"
+   ],
+   "diagnostic_checks": [
+    "read crash stack for the rejection origin"
+   ],
+   "confirming_signals": [
+    "unhandled rejection in logs"
+   ],
+   "disconfirming_signals": [
+    "other exit cause"
+   ],
+   "common_failed_actions": [
+    "catching all errors globally and continuing"
+   ],
+   "safe_remediation_guidance": [
+    "handle the rejection at its source"
+   ],
+   "warnings": [
+    "swallowing errors hides data corruption"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "nodejs-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-NODE-002",
+   "technology": "nodejs",
+   "category": "memory",
+   "title": "Node.js heap out of memory",
+   "symptoms": [
+    "JavaScript heap out of memory",
+    "crash under load"
+   ],
+   "likely_causes": [
+    "heap limit below need",
+    "leak"
+   ],
+   "diagnostic_checks": [
+    "check heap usage trend",
+    "heap snapshot"
+   ],
+   "confirming_signals": [
+    "heap grows to limit"
+   ],
+   "disconfirming_signals": [
+    "heap stable"
+   ],
+   "common_failed_actions": [
+    "raising heap limit only"
+   ],
+   "safe_remediation_guidance": [
+    "fix leak",
+    "set heap below container limit"
+   ],
+   "warnings": [
+    "heap above container limit causes OOM kill"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "nodejs-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-PY-001",
+   "technology": "python",
+   "category": "workers",
+   "title": "Python web worker timeouts",
+   "symptoms": [
+    "worker timeout messages",
+    "workers killed",
+    "slow requests"
+   ],
+   "likely_causes": [
+    "blocking calls in workers",
+    "too few workers"
+   ],
+   "diagnostic_checks": [
+    "check which requests exceed worker timeout"
+   ],
+   "confirming_signals": [
+    "slow calls block workers"
+   ],
+   "disconfirming_signals": [
+    "requests fast"
+   ],
+   "common_failed_actions": [
+    "raising timeout only"
+   ],
+   "safe_remediation_guidance": [
+    "add dependency timeouts",
+    "use async or more workers"
+   ],
+   "warnings": [
+    "long timeouts mask slow dependencies"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "python-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-PY-002",
+   "technology": "python",
+   "category": "asyncio",
+   "title": "Asyncio event loop blocked",
+   "symptoms": [
+    "async service stalls",
+    "slow callback warnings",
+    "all tasks delayed"
+   ],
+   "likely_causes": [
+    "blocking call inside coroutine"
+   ],
+   "diagnostic_checks": [
+    "enable asyncio debug mode to find slow callbacks"
+   ],
+   "confirming_signals": [
+    "slow callback warnings name a blocking call"
+   ],
+   "disconfirming_signals": [
+    "no slow callbacks"
+   ],
+   "common_failed_actions": [
+    "adding more event loop threads"
+   ],
+   "safe_remediation_guidance": [
+    "move blocking call to executor"
+   ],
+   "warnings": [
+    "one blocking call stalls every task"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "python-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-OBS-001",
+   "technology": "observability",
+   "category": "alerting",
+   "title": "Incident not detected: alert never fired",
+   "symptoms": [
+    "users reported problem first",
+    "alert silent",
+    "metric missing"
+   ],
+   "likely_causes": [
+    "alert routed to retired channel",
+    "metric renamed",
+    "threshold wrong"
+   ],
+   "diagnostic_checks": [
+    "check alert rule, metric presence and routing"
+   ],
+   "confirming_signals": [
+    "rule references missing metric or old route"
+   ],
+   "disconfirming_signals": [
+    "alert fired but was ignored"
+   ],
+   "common_failed_actions": [
+    "adding many noisy alerts"
+   ],
+   "safe_remediation_guidance": [
+    "fix routing and rules",
+    "alert on user-facing symptoms"
+   ],
+   "warnings": [
+    "noisy alerts get ignored"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "google-sre-book"
+    ]
+   }
+  },
+  {
+   "id": "KB-OBS-002",
+   "technology": "observability",
+   "category": "logging",
+   "title": "Logs missing during incident",
+   "symptoms": [
+    "no logs from a service",
+    "log pipeline lag",
+    "after logging change"
+   ],
+   "likely_causes": [
+    "log level too high",
+    "agent crashed",
+    "log volume limit"
+   ],
+   "diagnostic_checks": [
+    "check agent health and ingestion lag"
+   ],
+   "confirming_signals": [
+    "agent errors or dropped logs"
+   ],
+   "disconfirming_signals": [
+    "logs flowing"
+   ],
+   "common_failed_actions": [
+    "turning on debug logging everywhere"
+   ],
+   "safe_remediation_guidance": [
+    "fix agent",
+    "restore level"
+   ],
+   "warnings": [
+    "debug logging can fill disks"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "google-sre-book"
+    ]
+   }
+  },
+  {
+   "id": "KB-NET-001",
+   "technology": "network",
+   "category": "connectivity",
+   "title": "Service-to-service timeouts after network change",
+   "symptoms": [
+    "connections time out between services",
+    "no errors from the services themselves",
+    "after network or firewall change"
+   ],
+   "likely_causes": [
+    "firewall or network policy blocks traffic",
+    "route change"
+   ],
+   "diagnostic_checks": [
+    "test connectivity between the pair",
+    "review recent network policy changes"
+   ],
+   "confirming_signals": [
+    "connection attempts time out without response"
+   ],
+   "disconfirming_signals": [
+    "connectivity fine"
+   ],
+   "common_failed_actions": [
+    "restarting services"
+   ],
+   "safe_remediation_guidance": [
+    "restore the rule or policy"
+   ],
+   "warnings": [
+    "timeouts rather than refusals suggest dropped packets"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "cloud-provider-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-NET-002",
+   "technology": "network",
+   "category": "mtu",
+   "title": "Large requests hang: MTU mismatch",
+   "symptoms": [
+    "small requests work, large ones hang",
+    "after VPN or overlay network change"
+   ],
+   "likely_causes": [
+    "MTU mismatch dropping large packets"
+   ],
+   "diagnostic_checks": [
+    "test with increasing packet sizes"
+   ],
+   "confirming_signals": [
+    "packets above a size are dropped"
+   ],
+   "disconfirming_signals": [
+    "all sizes pass"
+   ],
+   "common_failed_actions": [
+    "raising timeouts"
+   ],
+   "safe_remediation_guidance": [
+    "align MTU or enable path MTU discovery"
+   ],
+   "warnings": [
+    "MTU issues look like random hangs"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "rfc-http"
+    ]
+   }
+  },
+  {
+   "id": "KB-CHECKOUT-001",
+   "technology": "ecommerce",
+   "category": "checkout",
+   "title": "Checkout fails after release",
+   "symptoms": [
+    "customers cannot place orders",
+    "checkout errors right after a release",
+    "payment or database errors"
+   ],
+   "likely_causes": [
+    "configuration regression such as database pool or connection settings",
+    "database saturation",
+    "payment or tax dependency failure"
+   ],
+   "diagnostic_checks": [
+    "compare deployment configuration with the previous version",
+    "check database connection saturation",
+    "check payment and dependency error rates"
+   ],
+   "confirming_signals": [
+    "a changed setting or saturated database connections"
+   ],
+   "disconfirming_signals": [
+    "configuration identical and database healthy (look at dependencies)"
+   ],
+   "common_failed_actions": [
+    "restarting the checkout service alone"
+   ],
+   "safe_remediation_guidance": [
+    "restore the changed setting",
+    "fail over dependency",
+    "roll back if a code regression"
+   ],
+   "warnings": [
+    "the same symptoms have several different causes"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "kubernetes-docs",
+     "postgresql-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-K8S-015",
+   "technology": "kubernetes",
+   "category": "init",
+   "title": "Init container failing blocks pod start",
+   "symptoms": [
+    "pod stuck in Init status",
+    "init container restarts",
+    "app container never starts"
+   ],
+   "likely_causes": [
+    "init container waits on unreachable dependency",
+    "migration in init fails"
+   ],
+   "diagnostic_checks": [
+    "read init container logs",
+    "check dependency reachability"
+   ],
+   "confirming_signals": [
+    "init logs show failure or waiting"
+   ],
+   "disconfirming_signals": [
+    "init completes"
+   ],
+   "common_failed_actions": [
+    "deleting the pod repeatedly"
+   ],
+   "safe_remediation_guidance": [
+    "fix the dependency or init command",
+    "add timeouts"
+   ],
+   "warnings": [
+    "init containers block the whole pod"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "kubernetes-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-K8S-016",
+   "technology": "kubernetes",
+   "category": "networking",
+   "title": "Network policy blocks traffic after change",
+   "symptoms": [
+    "pods cannot reach a service after policy change",
+    "timeouts not refusals"
+   ],
+   "likely_causes": [
+    "new default deny policy",
+    "missing allow rule"
+   ],
+   "diagnostic_checks": [
+    "list network policies selecting the pods",
+    "test connectivity"
+   ],
+   "confirming_signals": [
+    "no policy allows the flow"
+   ],
+   "disconfirming_signals": [
+    "policy allows the flow"
+   ],
+   "common_failed_actions": [
+    "deleting all policies"
+   ],
+   "safe_remediation_guidance": [
+    "add a specific allow rule"
+   ],
+   "warnings": [
+    "removing policies weakens isolation"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "kubernetes-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-K8S-017",
+   "technology": "kubernetes",
+   "category": "resources",
+   "title": "Evictions from memory pressure on nodes",
+   "symptoms": [
+    "pods evicted with memory pressure",
+    "node memory high",
+    "best-effort pods first"
+   ],
+   "likely_causes": [
+    "pods without memory requests overcommit nodes"
+   ],
+   "diagnostic_checks": [
+    "check node memory and pod requests versus usage"
+   ],
+   "confirming_signals": [
+    "usage far above requests"
+   ],
+   "disconfirming_signals": [
+    "requests match usage"
+   ],
+   "common_failed_actions": [
+    "restarting nodes"
+   ],
+   "safe_remediation_guidance": [
+    "set realistic memory requests and limits"
+   ],
+   "warnings": [
+    "best-effort pods are evicted first"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "kubernetes-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-GRPC-001",
+   "technology": "grpc",
+   "category": "errors",
+   "title": "gRPC deadline exceeded errors",
+   "symptoms": [
+    "DEADLINE_EXCEEDED errors",
+    "slow downstream calls",
+    "after load increase"
+   ],
+   "likely_causes": [
+    "downstream latency above caller deadline",
+    "deadlines not propagated"
+   ],
+   "diagnostic_checks": [
+    "trace calls to see where time is spent",
+    "compare deadlines at each hop"
+   ],
+   "confirming_signals": [
+    "downstream span exceeds deadline"
+   ],
+   "disconfirming_signals": [
+    "calls fast"
+   ],
+   "common_failed_actions": [
+    "removing deadlines"
+   ],
+   "safe_remediation_guidance": [
+    "fix slow hop",
+    "propagate and budget deadlines"
+   ],
+   "warnings": [
+    "no deadlines leads to piled-up requests"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "rfc-http"
+    ]
+   }
+  },
+  {
+   "id": "KB-GRPC-002",
+   "technology": "grpc",
+   "category": "connections",
+   "title": "gRPC unavailable after server restart",
+   "symptoms": [
+    "UNAVAILABLE errors after rollout",
+    "clients stick to old connections"
+   ],
+   "likely_causes": [
+    "long-lived HTTP/2 connections not rebalanced",
+    "client-side load balancing not configured"
+   ],
+   "diagnostic_checks": [
+    "check client connection distribution across servers"
+   ],
+   "confirming_signals": [
+    "traffic concentrated on few servers"
+   ],
+   "disconfirming_signals": [
+    "evenly distributed"
+   ],
+   "common_failed_actions": [
+    "restarting clients repeatedly"
+   ],
+   "safe_remediation_guidance": [
+    "enable client-side balancing or connection max age"
+   ],
+   "warnings": [
+    "HTTP/2 multiplexing hides imbalance"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "rfc-http"
+    ]
+   }
+  },
+  {
+   "id": "KB-RATE-001",
+   "technology": "api-gateway",
+   "category": "rate-limiting",
+   "title": "Our own gateway throttling legitimate traffic",
+   "symptoms": [
+    "429 from our gateway",
+    "after limit configuration change",
+    "many customers affected"
+   ],
+   "likely_causes": [
+    "limit lowered or keyed incorrectly"
+   ],
+   "diagnostic_checks": [
+    "compare gateway limits with the previous configuration",
+    "check keying"
+   ],
+   "confirming_signals": [
+    "new limit lower or keyed on shared attribute"
+   ],
+   "disconfirming_signals": [
+    "limits unchanged"
+   ],
+   "common_failed_actions": [
+    "disabling rate limiting entirely"
+   ],
+   "safe_remediation_guidance": [
+    "restore limit",
+    "key per client"
+   ],
+   "warnings": [
+    "removing limits exposes backends"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "rfc-http"
+    ]
+   }
+  },
+  {
+   "id": "KB-SEC-002",
+   "technology": "security",
+   "category": "secrets",
+   "title": "Secret accidentally exposed in logs",
+   "symptoms": [
+    "credential found in logs or tickets",
+    "security alert"
+   ],
+   "likely_causes": [
+    "debug logging printing headers or env"
+   ],
+   "diagnostic_checks": [
+    "search logs for the credential pattern",
+    "find the logging code path"
+   ],
+   "confirming_signals": [
+    "secret present in logs"
+   ],
+   "disconfirming_signals": [
+    "no occurrences"
+   ],
+   "common_failed_actions": [
+    "deleting the log entry only"
+   ],
+   "safe_remediation_guidance": [
+    "rotate the secret immediately",
+    "fix logging",
+    "purge copies"
+   ],
+   "warnings": [
+    "assume an exposed secret is compromised"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "google-sre-book"
+    ]
+   }
+  },
+  {
+   "id": "KB-DNS-005",
+   "technology": "dns",
+   "category": "caching",
+   "title": "Application caches DNS forever",
+   "symptoms": [
+    "service keeps calling old IP after DNS change",
+    "restart fixes"
+   ],
+   "likely_causes": [
+    "runtime or client caches DNS without honouring TTL"
+   ],
+   "diagnostic_checks": [
+    "check client DNS caching settings"
+   ],
+   "confirming_signals": [
+    "resolved address never refreshes"
+   ],
+   "disconfirming_signals": [
+    "address refreshes per TTL"
+   ],
+   "common_failed_actions": [
+    "restarting on every DNS change"
+   ],
+   "safe_remediation_guidance": [
+    "configure DNS cache TTL in the runtime"
+   ],
+   "warnings": [
+    "some runtimes cache indefinitely by default"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "rfc-dns"
+    ]
+   }
+  },
+  {
+   "id": "KB-TLS-008",
+   "technology": "tls",
+   "category": "clients",
+   "title": "Clients reject certificate from private CA",
+   "symptoms": [
+    "certificate verify failed from some services",
+    "internal CA"
+   ],
+   "likely_causes": [
+    "private CA not in client trust store",
+    "new base image without CA bundle"
+   ],
+   "diagnostic_checks": [
+    "check trust store contents in client image"
+   ],
+   "confirming_signals": [
+    "private CA missing"
+   ],
+   "disconfirming_signals": [
+    "CA present"
+   ],
+   "common_failed_actions": [
+    "disabling verification"
+   ],
+   "safe_remediation_guidance": [
+    "add CA to trust store in image"
+   ],
+   "warnings": [
+    "disabling verification enables interception"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "openssl-docs"
+    ]
+   }
+  },
+  {
+   "id": "KB-PAY-001",
+   "technology": "payments",
+   "category": "currency",
+   "title": "Payments declined for one currency",
+   "symptoms": [
+    "declines only for one currency",
+    "after payment code change",
+    "amount errors"
+   ],
+   "likely_causes": [
+    "minor unit conversion wrong for zero-decimal currencies"
+   ],
+   "diagnostic_checks": [
+    "compare sent amounts with expected for affected currency"
+   ],
+   "confirming_signals": [
+    "amounts off by factor 100"
+   ],
+   "disconfirming_signals": [
+    "amounts correct"
+   ],
+   "common_failed_actions": [
+    "contacting provider first"
+   ],
+   "safe_remediation_guidance": [
+    "fix per-currency unit handling"
+   ],
+   "warnings": [
+    "test zero-decimal currencies explicitly"
+   ],
+   "source": {
+    "source_id": "memoryops-curated",
+    "trust_level": "SYNTHETIC",
+    "references": [
+     "rfc-http"
+    ]
+   }
+  }
+ ]
+}
