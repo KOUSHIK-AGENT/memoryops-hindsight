@@ -2,6 +2,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { DATASET_PATH, loadJson, validateDataset, incidentToRetainItem } from "./lib/dataset.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -16,46 +17,16 @@ const BANK_ID = process.env.HINDSIGHT_BANK_ID || "memoryops-demo";
 const TIMEOUT_OVERRIDE = Number(process.env.HINDSIGHT_TIMEOUT_MS) || 0;
 const TIMEOUTS = { status: 10000, retain: 120000, recall: 30000, reflect: 90000 };
 const MAX_TEXT = 4000;
-const BANK_PATH = `/v1/default/banks/${encodeURIComponent(BANK_ID)}`;
+export const BANK_PATH = `/v1/default/banks/${encodeURIComponent(BANK_ID)}`;
+export { BANK_ID };
 
-// Deterministic sample history. It is *stored* in Hindsight by /api/seed;
-// everything shown after analysis comes back from Hindsight recall/reflect.
-const seedIncidents = [
-  {
-    id: "INC-1042",
-    area: "Checkout",
-    date: "2026-03-14T10:20:00Z",
-    title: "Checkout stopped working shortly after a software update.",
-    happened: "Orders failed and database requests started timing out right after the update.",
-    cause: "The database connection limit had accidentally been changed from 30 to 5 in the update, so the database could not serve enough checkout requests at once.",
-    worked: "Restored the database connection limit to 30, restarted the checkout service, and verified that orders and database metrics returned to normal.",
-    attempted: "Restarting the checkout service alone; the database timeouts came back within minutes.",
-    lesson: "When checkout failures and database timeouts appear immediately after an update, compare the database connection settings with the previous working configuration.",
-    technical: "checkout-api returned HTTP 502; logs showed 'database acquire timeout'; PostgreSQL connection pool reduced from 30 to 5."
-  },
-  {
-    id: "INC-1057",
-    area: "Payments",
-    date: "2026-04-02T16:05:00Z",
-    title: "Some customers were charged twice for the same payment.",
-    happened: "Payment jobs kept retrying and some payment confirmations were sent twice after a cache server restarted.",
-    cause: "The cache that remembers which payments were already processed became unavailable after a Redis failover.",
-    worked: "Restored the cache connection, drained the retry backlog slowly, and confirmed duplicate charges stopped.",
-    lesson: "A sudden rise in duplicate payment confirmations plus retry storms usually means the duplicate-protection cache was lost.",
-    technical: "payments-worker retry loop every 30s; duplicate webhook deliveries; idempotency-key cache miss after Redis failover."
-  },
-  {
-    id: "INC-1088",
-    area: "Login",
-    date: "2026-05-21T08:40:00Z",
-    title: "Users could not sign in after a security certificate was renewed.",
-    happened: "Sign-in became very slow (over 8 seconds) and many sign-in attempts failed.",
-    cause: "One copy of the login service was still using the old security certificate.",
-    worked: "Updated the certificate reference, restarted the outdated copy of the service, and verified sign-in on every server.",
-    lesson: "After renewing a certificate, confirm every copy of the service uses the new one; a mix causes intermittent sign-in failures.",
-    technical: "identity-api token validation failures after signing-certificate rotation; one deployment referenced the previous certificate."
-  }
-];
+// "Load past solved incidents" stores these three records from the synthetic dataset (data/incidents.json).
+// Same document_ids as `npm run memory:seed`, so the button and the bulk ingest never duplicate each other.
+const SAMPLE_IDS = ["INC-1042", "INC-1057", "INC-1088"];
+function sampleIncidents() {
+  const { valid } = validateDataset(loadJson(DATASET_PATH));
+  return SAMPLE_IDS.map((id) => valid.find((r) => r.incident_id === id)).filter(Boolean);
+}
 
 const GENERAL_TROUBLESHOOTING = {
   pattern: "No similar solved problem was found in team memory, so this is general troubleshooting.",
@@ -107,7 +78,7 @@ function send(res, status, payload, type = "application/json; charset=utf-8") {
   res.end(body);
 }
 
-class ApiError extends Error {
+export class ApiError extends Error {
   constructor(status, code, message, detail) {
     super(message);
     this.status = status;
@@ -155,7 +126,7 @@ function redact(text) {
   return s.slice(0, 300);
 }
 
-async function hindsightFetch(urlPath, { method = "GET", body, timeoutMs } = {}) {
+export async function hindsightFetch(urlPath, { method = "GET", body, timeoutMs } = {}) {
   if (!API_KEY) {
     throw new ApiError(503, "missing_api_key", "Hindsight is not configured: HINDSIGHT_API_KEY is missing. Copy .env.example to .env and add your key.");
   }
@@ -194,28 +165,7 @@ async function hindsightFetch(urlPath, { method = "GET", body, timeoutMs } = {})
 
 // ---------- Hindsight operations ----------
 
-function incidentDocument(i) {
-  return {
-    content: [
-      `Past solved problem ${i.id} (${i.area})`,
-      `Title: ${i.title}`,
-      "Status: Confirmed resolution (sample history for the demo)",
-      `What happened: ${i.happened}`,
-      `Confirmed cause: ${i.cause}`,
-      i.attempted && `Tried but did NOT fix it: ${i.attempted}`,
-      `What worked: ${i.worked}`,
-      `Lesson learned: ${i.lesson}`,
-      `Technical details: ${i.technical}`
-    ].filter(Boolean).join("\n"),
-    context: `Resolved incident report ${i.id} for the ${i.area.toLowerCase()} area`,
-    timestamp: i.date,
-    // Stable document_id => re-seeding replaces instead of duplicating.
-    document_id: `memoryops-${i.id}`,
-    metadata: { memoryops_id: i.id, source: "sample-history" }
-  };
-}
-
-async function retain(items) {
+export async function retain(items) {
   const data = await hindsightFetch(`${BANK_PATH}/memories`, {
     method: "POST",
     body: { items, async: false },
@@ -276,6 +226,10 @@ function parseFields(text) {
     cause: pick("Confirmed cause"),
     suspectedCause: pick("Suspected cause (not confirmed)"),
     attempted: pick("Tried but did NOT fix it"),
+    context: pick("Context"),
+    ruledOut: pick("Initially suspected but ruled out"),
+    partial: pick("Tried, helped only partially"),
+    verification: pick("Verification"),
     worked: pick("What worked"),
     outcome: pick("Outcome"),
     lesson: pick("Lesson learned"),
@@ -390,6 +344,7 @@ function reflectPrompt(incident, matches) {
     "How to weigh evidence:",
     "- Human-confirmed causes and fixes are authoritative. A 'Suspected cause (not confirmed)' is only a lead; say so if you use it.",
     "- Never recommend an action listed under 'Tried but did NOT fix it' as the main fix. Put it in avoid (e.g. 'Restarting the service alone did not fix this before'); otherwise avoid=\"\".",
+    "- Similar symptoms do not guarantee the same cause. If more than one recalled problem is plausible, list the distinguishing checks first and explain in conflict_note.",
     "- If recalled past problems disagree about the cause or the fix, describe the disagreement in conflict_note and do not pick one as certain; otherwise conflict_note=\"\".",
     "- 'Team feedback' memories only say whether a past incident was relevant to some problem. Use them as a relevance hint, never as a cause or fix.",
     "- team_learned: one sentence summarising what this team has learned about this kind of problem, based only on stored memory; \"\" if nothing relevant.",
@@ -403,6 +358,37 @@ function reflectPrompt(incident, matches) {
     "If no past problem is genuinely similar: similar_problem_found=false, matched_incident_id=\"\", and give three general first checks.",
     "Use plain language; put technical terms in parentheses only when helpful."
   ].join("\n");
+}
+
+// ---------- Analysis (used by /api/analyze and scripts/evaluate-memory.mjs) ----------
+
+export async function recallMatches(query) {
+  return groupRecall(await recall(query));
+}
+
+export async function analyzeIncident(incident) {
+  const matches = await recallMatches(incident);
+  if (matches.length === 0) {
+    return { ok: true, state: "no_experience", matches: [], recommendation: { structured: true, memoryUsed: false, matchedIncidentId: null, general: true, ...GENERAL_TROUBLESHOOTING } };
+  }
+  let recommendation;
+  try {
+    recommendation = shapeRecommendation(await reflect(reflectPrompt(incident, matches)), matches);
+  } catch (err) {
+    // Recall worked; show what was recalled and report the reflect failure honestly.
+    return { ok: true, state: "match_found", matches, recommendation: null, reflectError: { message: err.message || "Reflect failed.", code: err.code || "reflect_failed" } };
+  }
+  return { ok: true, state: recommendation.memoryUsed ? "recommendation_ready" : "no_experience", matches, recommendation };
+}
+
+// Exact per-kind document counts via GET /documents?q=<id prefix> (the response's total).
+async function countDocuments(prefix) {
+  try {
+    const data = await hindsightFetch(`${BANK_PATH}/documents?q=${encodeURIComponent(prefix)}&limit=1`, { timeoutMs: TIMEOUTS.status });
+    return Number.isFinite(data.total) ? data.total : null;
+  } catch {
+    return null;
+  }
 }
 
 // ---------- Routes ----------
@@ -422,6 +408,8 @@ async function api(req, res, url) {
         facts: Number.isFinite(stats.total_nodes) ? stats.total_nodes : null,
         pendingOperations: Number.isFinite(stats.pending_operations) ? stats.pending_operations : 0
       });
+      const [historical, learned, feedback] = await Promise.all(["memoryops-INC-", "memoryops-MO-", "memoryops-feedback-"].map(countDocuments));
+      status.counts = { historical, learned, feedback };
     } catch (err) {
       if (err.code === "hindsight_not_found") Object.assign(status, { connected: true, documents: 0, facts: 0 });
       else Object.assign(status, { error: err.message, code: err.code });
@@ -433,8 +421,9 @@ async function api(req, res, url) {
     if (seedInFlight) throw new ApiError(409, "seed_in_progress", "Past incidents are already being loaded. Please wait.");
     seedInFlight = true;
     try {
-      const result = await retain(seedIncidents.map(incidentDocument));
-      return send(res, 200, { ok: true, seeded: seedIncidents.length, stored: result.items_count ?? seedIncidents.length, incidents: seedIncidents.map((i) => i.id) });
+      const samples = sampleIncidents();
+      const result = await retain(samples.map(incidentToRetainItem));
+      return send(res, 200, { ok: true, seeded: samples.length, stored: result.items_count ?? samples.length, incidents: samples.map((i) => i.incident_id) });
     } finally {
       seedInFlight = false;
     }
@@ -442,25 +431,7 @@ async function api(req, res, url) {
 
   if (req.method === "POST" && url.pathname === "/api/analyze") {
     const incident = requiredText(await readJson(req), "incident", "A description of the current problem");
-    const matches = groupRecall(await recall(incident));
-
-    if (matches.length === 0) {
-      return send(res, 200, { ok: true, state: "no_experience", matches: [], recommendation: { structured: true, memoryUsed: false, matchedIncidentId: null, general: true, ...GENERAL_TROUBLESHOOTING } });
-    }
-
-    let recommendation;
-    try {
-      recommendation = shapeRecommendation(await reflect(reflectPrompt(incident, matches)), matches);
-    } catch (err) {
-      // Recall worked; show what was recalled and report the reflect failure honestly.
-      return send(res, 200, { ok: true, state: "match_found", matches, recommendation: null, reflectError: { message: err.message || "Reflect failed.", code: err.code || "reflect_failed" } });
-    }
-    return send(res, 200, {
-      ok: true,
-      state: recommendation.memoryUsed ? "recommendation_ready" : "no_experience",
-      matches,
-      recommendation
-    });
+    return send(res, 200, await analyzeIncident(incident));
   }
 
   if (req.method === "POST" && url.pathname === "/api/resolve") {

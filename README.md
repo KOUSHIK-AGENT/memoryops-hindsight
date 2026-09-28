@@ -68,8 +68,9 @@ On Windows PowerShell, run `Copy-Item .env.example .env` and then `notepad .env`
 ## Test it
 
 ```bash
-npm test          # 19 tests against a fake Hindsight server; never touches your account
+npm test          # 29 tests (server, dataset, ingestion) against fake Hindsight; never touches your account
 npm run smoke     # the 7 learning-loop acceptance checks against your REAL bank (server must be running)
+                  # (same as npm run memory:smoke)
 ```
 
 `npm test` covers status, validation, the empty-memory path, attribution only to recalled incidents, the confirmed-only save, suspected versus confirmed causes, feedback isolation, seeding without duplicates, 401/429/500 errors, timeouts, malformed responses, key non-leakage, and a full learning-loop scenario (with scripted recall).
@@ -84,6 +85,43 @@ npm run smoke     # the 7 learning-loop acceptance checks against your REAL bank
 7. Analysis stores nothing, and unconfirmed saves are refused.
 
 It writes to the bank, so use a fresh `HINDSIGHT_BANK_ID`.
+
+## Memory Dataset
+
+**MemoryOps is not fine-tuning the underlying language model. It bootstraps Hindsight with verified incident experience and continues learning from human-confirmed resolutions.**
+
+- **Corpus:** `data/incidents.json` contains 50 **synthetic** resolved incidents, 5 in each of 10 categories: checkout, payments, login/authentication, database, slow APIs/latency, deployment/configuration, storage, certificates/TLS, background queues, and external dependencies. No real company data is used.
+- **Structure:** each record has `incident_id, title, service, category, severity, environment, symptoms[], context, suspected_causes[]` (ruled out), `confirmed_root_cause, attempted_actions[]` (each with `worked: false | "partial"` and an observation), `successful_action, outcome, lesson_learned, verification, status: "confirmed_resolved", timestamp`. Validation rejects anything else: unconfirmed status, attempted actions marked as having worked, unknown categories, bad dates, or duplicate IDs.
+- **Conflicting memories on purpose:** INC-1042, INC-1010, and INC-1001 are all "checkout failing after a release", but their causes were a database connection pool, an expired dependency certificate, and a payment-provider outage. The same symptoms do not mean the same cause. Reflect is told to list the checks that tell the causes apart and to report conflicts.
+- **Memory text:** `lib/dataset.mjs` turns each record into a deterministic, labelled natural-language memory: *What happened, Context, Initially suspected but ruled out, Confirmed cause, Tried but did NOT fix it, Tried and helped only partially, What worked, Outcome, Verification, Lesson learned*. The app's incident cards read these fields back from recalled chunks.
+
+### Ingestion
+
+```bash
+npm run memory:seed -- --bank memoryops-training-v1            # all 50
+npm run memory:seed -- --bank memoryops-training-v1 --dry-run  # validate + print one memory, no network
+```
+
+- **A bank must be named explicitly,** so development runs never write to your demo bank by accident. Suggested banks: `memoryops-training-v1`, `memoryops-evaluation-v1`, `memoryops-final-demo`.
+- **Duplicate-safe:** each incident's `document_id` is `memoryops-INC-xxxx`. Hindsight upserts on `document_id` by deleting the old version and re-processing. Before sending anything, the script calls `GET /documents/{id}` and skips incidents whose stored `original_text` is unchanged. A second run therefore reports `50 unchanged` and sends nothing.
+- **Batching and errors:** synchronous retains in batches of 5 (`--batch-size`). 429, 5xx, timeout, and network errors are retried up to 3 times with exponential backoff; Hindsight documents no rate limits, so this is deliberately conservative. On 401/403 the script stops immediately. The API key is never printed.
+- **Shared with the app:** the *Load past solved incidents* button stores 3 records from this same dataset with the same document IDs, so the button and the script never duplicate each other.
+
+### Evaluation (held out)
+
+```bash
+npm run memory:evaluate -- --bank memoryops-evaluation-v1           # recall + reflect, the real app pipeline
+npm run memory:evaluate -- --bank memoryops-evaluation-v1 --recall-only --k 5 --json eval.json
+```
+
+- `data/evaluation-cases.json` has 20 cases: 13 reworded, 1 ambiguous, 2 with several plausible matches, and 4 that should not match (2 unrelated, 2 technical with no comparable incident). The expected category, expected incident IDs, `should_match`, and notes are only used for scoring.
+- **Held out:** queries are written independently of the dataset. A unit test fails if any query shares a 6-word phrase with any memory text.
+- **No gaming:** the harness calls the same `analyzeIncident()` the app uses (real Hindsight recall, then reflect's match judgement). Expected answers are only compared after the results come back.
+- **Report:** Top-1 and Top-K retrieval, correct no-match behaviour, false matches, missed matches, failed requests, and every failure with what was retrieved. Hindsight reranker scores are shown only when Hindsight returns them. `--recall-only` skips reflect and does not score no-match behaviour, because recall always returns its nearest memories.
+
+### How bootstrap and continuous learning fit together
+
+The dataset gives the bank its **initial experience**. From then on, each human-confirmed resolution saved in the app becomes a new `memoryops-MO-…` document in the same bank. It is recalled alongside the dataset and never overwrites it. The Knowledge Bank badge shows exact counts from Hindsight (`GET /documents?q=<prefix>` totals), for example *50 historical incidents · 2 learned*. AI recommendations and feedback never become verified incidents.
 
 ## Clean memory bank (for the "before" state)
 
@@ -105,10 +143,16 @@ The **Demo problems** buttons (Round 1 / Round 2 · reworded / Unrelated) fill i
 4. **Round 3: accumulate.** Confirm and save the Round 2 outcome, which has a different cause (a configuration template). The memory count grows, and the log shows experience building up.
 5. **Unrelated.** Click **Unrelated**, then **Analyze problem**. MemoryOps does not reuse the checkout experience.
 
-*Load past solved incidents* is optional: it adds 3 sample incidents if you want a richer bank to start with.
+*Load past solved incidents* is optional: it adds 3 incidents from the dataset.
+
+**Bootstrap variant** (shows bootstrap learning and continuous learning together): `npm run memory:seed -- --bank memoryops-final-demo`, set `HINDSIGHT_BANK_ID=memoryops-final-demo`, then `npm start`. The badge reads *50 historical incidents · 0 learned*.
+1. Click **Round 2 · reworded**, then **Analyze problem**. Hindsight recalls a dataset incident (INC-1042 in the intended case) with its cause, what worked, and what did not.
+2. Confirm and save today's fix. The badge becomes *1 learned*.
+3. Analyze a similar reworded problem. The newly learned `MO-…` resolution is recalled alongside the dataset.
 
 ## Limitations
 
+- The 50-incident corpus is synthetic. Retrieval quality on it says nothing about real-world incident data, and 20 evaluation cases is a small sample.
 - The sample history is deterministic demo data. Recall and reflect results come from Hindsight, so the exact wording (and occasionally the match judgement) varies from run to run.
 - A single shared memory bank. There is no login, no multi-tenancy, and no deletion of memories from the UI.
 - MemoryOps only suggests checks. Learning changes the evidence available, never what the system is allowed to do. A person verifies, acts, and confirms, and there is no automatic fix.

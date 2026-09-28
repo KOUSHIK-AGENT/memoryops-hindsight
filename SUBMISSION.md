@@ -10,6 +10,9 @@ Every time the team solves a problem, MemoryOps remembers what actually worked. 
 
 The self-learning loop: recall similar resolved incidents → recommend what to check → a person verifies, acts, and confirms the outcome → the **verified** outcome is retained in Hindsight, including what did *not* work → the next similar problem recalls it. MemoryOps becomes more useful as verified incident experience accumulates. It does not claim that the model retrains itself.
 
+## Memory dataset (bootstrap)
+MemoryOps is not fine-tuning the underlying language model. It bootstraps Hindsight with 50 synthetic, confirmed-resolved incidents across 10 categories. They include failed attempts, suspicions that were ruled out, and deliberate conflicts (the same symptoms with different causes). It then keeps learning from human-confirmed resolutions. Ingestion is duplicate-safe (stable document IDs, and unchanged records are skipped). A held-out set of 20 evaluation cases measures real Hindsight retrieval (`npm run memory:evaluate`). No accuracy figures are claimed here until that has been run against a real bank.
+
 ## Why Hindsight matters
 Without memory, MemoryOps can only offer general troubleshooting. With Hindsight, the **same** problem description brings back a real past incident and a recommendation grounded in it. The demo shows this before/after difference directly.
 
@@ -33,7 +36,7 @@ Browser (vanilla HTML/CSS/JS) → MemoryOps Node API (`server.mjs`, zero depende
 - Timeouts on every Hindsight call, clear error mapping (401/404/429/5xx/timeout/malformed), and protection against concurrent seeding.
 - The API key stays server-side and is redacted from any error text.
 - Guardrails against reinforcing its own mistakes: only confirmed outcomes are learned, confirmed and suspected causes are kept apart, attempts that worked are kept apart from ones that failed, and nothing is overwritten.
-- 19 automated tests against a fake Hindsight server (`npm test`), plus `npm run smoke`, which runs the 7 learning-loop acceptance checks against a real bank.
+- 29 automated tests against a fake Hindsight server (`npm test`), plus `npm run smoke`, which runs the 7 learning-loop acceptance checks against a real bank.
 
 ## Real-world value
 Getting to a useful first step faster on repeat problems, and keeping team knowledge when people move on. These are the intended benefits. We have **not** measured them. The UI shows only factual progress, such as "0 relevant memories recalled" followed by "1 relevant resolved incident recalled". Possible future metrics: verified resolutions stored, usefulness feedback, and time to resolve repeat incidents.
@@ -42,7 +45,7 @@ Getting to a useful first step faster on repeat problems, and keeping team knowl
 Past incidents are shown as evidence, not certainty. Every recommendation tells the team to verify today's system before applying a previous fix. Learning changes the evidence available, not what MemoryOps is allowed to do: memory recommends, then a person verifies, acts, and confirms, and only then does memory learn. MemoryOps never changes any system.
 
 ## Known limitations
-The sample history is demo data, and reflect wording varies between runs. There is one shared bank with no authentication. Memories can't be deleted from the UI (use a fresh bank ID instead). Retain is synchronous, so it can take a few seconds.
+The dataset is synthetic and the evaluation set is small (20 cases). Reflect wording varies between runs. There is one shared bank with no authentication. Memories can't be deleted from the UI (use a fresh bank ID instead). Retain is synchronous, so it can take a few seconds.
 
 ## Future Microsoft integration (not implemented)
 Microsoft Teams (report and resolve from chat), Azure Monitor / Application Insights (problems from real alerts), Azure DevOps (deployment history as evidence), Microsoft Entra ID (sign-in and a memory bank for each team).

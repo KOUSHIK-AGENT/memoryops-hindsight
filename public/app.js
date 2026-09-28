@@ -45,6 +45,7 @@ const $ = (id) => document.getElementById(id);
 const state = {
   connected: false,
   documents: null,
+  counts: null, // real per-kind document totals from Hindsight: { historical, learned, feedback }
   demoState: "ready",
   analyses: 0,
   lastAnalysis: null, // { incident, matchedId } for feedback
@@ -165,6 +166,9 @@ function renderMemoryBadge() {
   if (!state.connected) {
     badge.textContent = "Memory unavailable";
     badge.className = "badge badge-neutral";
+  } else if (Number.isFinite(state.counts?.historical) && Number.isFinite(state.counts?.learned) && state.documents > 0) {
+    badge.textContent = `${state.counts.historical} historical incidents · ${state.counts.learned} learned`;
+    badge.title = "Exact counts of documents in this Hindsight bank: dataset/sample incidents and human-confirmed resolutions saved from MemoryOps.";
   } else if (state.documents > 0) {
     badge.textContent = `${countLabel(state.documents)} stored`;
     badge.className = "badge badge-memory";
@@ -183,6 +187,7 @@ async function refreshStatus() {
     const s = await apiRequest("/api/status");
     state.connected = s.connected;
     state.documents = s.documents;
+    state.counts = s.counts || null;
     const dot = $("dot");
     if (s.connected) {
       dot.className = "status-dot ok";
@@ -367,17 +372,21 @@ function incidentCard(m, label) {
   const score = Number.isFinite(m.score) ? `<span class="similarity-score" title="Hindsight reranker relevance score (0–1)">relevance ${m.score.toFixed(2)}</span>` : "";
   const field = (name, value, cls = "") => value ? `<div class="incident-field"><span class="field-label">${name}</span><p class="field-value ${cls}">${esc(value)}</p></div>` : "";
   const structured = m.fields
-    ? field("What happened", f.title && f.happened && !f.happened.startsWith(f.title) ? `${f.title} ${f.happened}` : f.happened || f.title) +
+    ? field("What happened", f.title && f.happened && !f.happened.startsWith(f.title) ? `${f.title}${/[.!?]$/.test(f.title) ? "" : "."} ${f.happened.charAt(0).toUpperCase()}${f.happened.slice(1)}` : f.happened || f.title) +
       field("Confirmed cause", f.cause, "highlight-cause") +
       field("Suspected cause (not confirmed)", f.suspectedCause) +
       field("Tried, but did NOT fix it", f.attempted, "highlight-failed") +
+      field("Tried, helped only partially", f.partial) +
       field("What worked", f.worked, "highlight-fix") +
       field("Outcome", f.outcome) +
+      field("How the fix was verified", f.verification) +
       field("Lesson learned", f.lesson) +
       (m.feedback?.length ? field("Team feedback", m.feedback.map((x) => `${x.verdict} for “${x.problem || "a similar problem"}”`).join(" · ")) : "")
     : `<div class="incident-field"><span class="field-label">Recalled facts</span><ul class="fact-list">${m.facts.map((t) => `<li>${esc(t)}</li>`).join("")}</ul></div>`;
   const raw = [
     f.technical ? `<p><strong>Technical details:</strong> ${esc(f.technical)}</p>` : "",
+    f.context ? `<p><strong>Context:</strong> ${esc(f.context)}</p>` : "",
+    f.ruledOut ? `<p><strong>Initially suspected, ruled out:</strong> ${esc(f.ruledOut)}</p>` : "",
     `<p><strong>Facts Hindsight recalled:</strong></p><ul class="fact-list">${m.facts.map((t) => `<li>${esc(t)}</li>`).join("")}</ul>`,
     m.documentId ? `<p class="mono">document_id: ${esc(m.documentId)}</p>` : ""
   ].join("");
@@ -390,7 +399,7 @@ function incidentCard(m, label) {
         <span class="incident-id">${esc(m.incidentId)}</span>
         ${f.area ? `<span class="service-pill">${esc(f.area)}</span>` : ""}
         ${m.verified ? `<span class="verified-pill" title="${esc(f.status || "")}">✓ ${m.learned ? "Human-confirmed" : "Confirmed"}</span>` : ""}
-        ${!m.learned && m.documentId?.startsWith("memoryops-INC-") ? '<span class="service-pill">Sample history</span>' : ""}
+        ${!m.learned && m.documentId?.startsWith("memoryops-INC-") ? '<span class="service-pill">Historical dataset</span>' : ""}
         <span class="service-pill">Recall rank #${m.rank}</span>
       </div>
       ${score}
