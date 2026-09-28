@@ -1380,3 +1380,83 @@ ol.checks-list { list-style: none; padding: 0; }
 .obs-row { display: flex; gap: 8px; margin-top: 10px; }
 .obs-row input { flex: 1; padding: 8px 12px; font-size: 13px; }
 .session-obs { margin-top: 10px; }
+
+/* ---- First-open intro ---- */
+html { background-color: var(--bg-canvas); } /* no white flash before/after the intro */
+
+.intro {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  background-color: var(--bg-canvas);
+  background-image: radial-gradient(ellipse 50% 35% at 50% 42%, rgba(59, 130, 246, 0.06), transparent 70%);
+  transition: opacity 650ms cubic-bezier(0.22, 1, 0.36, 1), filter 650ms cubic-bezier(0.22, 1, 0.36, 1), transform 650ms cubic-bezier(0.22, 1, 0.36, 1);
+  /* Failsafe: if JavaScript never runs, get out of the way after 4s. */
+  animation: intro-failsafe 400ms ease 4s forwards;
+}
+.intro.is-leaving { opacity: 0; filter: blur(4px); transform: scale(1.01); pointer-events: none; }
+.intro-inner { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 0 24px; text-align: center; }
+
+.intro-title, .intro-sub, .intro-status, .intro-motif {
+  opacity: 0;
+  animation: intro-rise 900ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.intro-motif { margin-bottom: 10px; animation-delay: 60ms; }
+.intro-title { font-size: 40px; font-weight: 700; letter-spacing: -0.025em; color: var(--text-primary); animation-delay: 180ms; }
+.intro-sub { margin: 0; max-width: 460px; font-size: 16px; line-height: 1.5; color: var(--text-secondary); animation-delay: 480ms; }
+.intro-status { margin: 14px 0 0; font-size: 12px; letter-spacing: 0.02em; color: var(--text-muted); animation-delay: 700ms; }
+
+.intro-links path {
+  stroke: rgba(148, 163, 184, 0.28);
+  stroke-width: 1;
+  stroke-dasharray: 60;
+  stroke-dashoffset: 60;
+  animation: intro-draw 1100ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+.intro-links path:nth-child(1) { animation-delay: 300ms; }
+.intro-links path:nth-child(2) { animation-delay: 420ms; }
+.intro-links path:nth-child(3) { animation-delay: 540ms; }
+.intro-links path:nth-child(4) { animation-delay: 660ms; }
+.intro-links path:nth-child(5) { animation-delay: 780ms; }
+.intro-links path:nth-child(6) { animation-delay: 900ms; }
+.intro-nodes circle { fill: rgba(203, 213, 225, 0.55); opacity: 0; animation: intro-node 700ms ease forwards; }
+.intro-nodes circle:nth-child(1) { animation-delay: 150ms; }
+.intro-nodes circle:nth-child(2) { animation-delay: 250ms; }
+.intro-nodes circle:nth-child(3) { animation-delay: 350ms; }
+.intro-nodes circle:nth-child(5) { animation-delay: 450ms; }
+/* The "recalled" memory: lights up last, softly, in the memory accent. */
+.intro-nodes .intro-node-recalled { fill: rgba(16, 185, 129, 0.75); animation-delay: 1000ms; }
+
+@keyframes intro-rise {
+  from { opacity: 0; transform: translateY(6px) scale(0.98); filter: blur(6px); }
+  to { opacity: 1; transform: none; filter: none; }
+}
+@keyframes intro-draw { to { stroke-dashoffset: 0; } }
+@keyframes intro-node { to { opacity: 1; } }
+@keyframes intro-failsafe { to { opacity: 0; visibility: hidden; pointer-events: none; } }
+
+/* The dashboard waits underneath, then resolves into place (transform/filter end at "none",
+   so fixed-position toasts and banners keep working afterwards). */
+.app-shell {
+  transition: opacity 700ms cubic-bezier(0.22, 1, 0.36, 1), transform 700ms cubic-bezier(0.22, 1, 0.36, 1), filter 700ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+body.intro-active { overflow: hidden; }
+body.intro-active .app-shell {
+  opacity: 0;
+  transform: scale(0.98);
+  filter: blur(6px);
+  animation: app-failsafe 400ms ease 4s forwards;
+}
+@keyframes app-failsafe { to { opacity: 1; transform: none; filter: none; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .intro, .intro * { animation: none !important; }
+  .intro-title, .intro-sub, .intro-status, .intro-motif, .intro-nodes circle { opacity: 1; }
+  .intro-links path { stroke-dashoffset: 0; }
+  .intro { transition: opacity 250ms linear; }
+  .intro.is-leaving { filter: none; transform: none; }
+  .app-shell { transition: opacity 250ms linear; }
+  body.intro-active .app-shell { transform: none; filter: none; animation: app-failsafe 1ms linear 4s forwards; }
+}

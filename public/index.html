@@ -10,8 +10,27 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/styles.css" />
 </head>
-<body>
-  <div class="app-shell">
+<body class="intro-active">
+  <!-- First-open intro. Decorative: removed after load; CSS failsafe hides it if JS never runs. -->
+  <div id="intro" class="intro" aria-hidden="true">
+    <div class="intro-inner">
+      <svg class="intro-motif" width="148" height="80" viewBox="0 0 148 80" fill="none">
+        <g class="intro-links" stroke-linecap="round">
+          <path d="M22 44 L60 18" /><path d="M60 18 L104 30" /><path d="M104 30 L126 58" />
+          <path d="M60 18 L74 62" /><path d="M22 44 L74 62" /><path d="M74 62 L126 58" />
+        </g>
+        <g class="intro-nodes">
+          <circle cx="22" cy="44" r="3.5" /><circle cx="60" cy="18" r="3.5" /><circle cx="104" cy="30" r="3.5" />
+          <circle cx="74" cy="62" r="4.5" class="intro-node-recalled" /><circle cx="126" cy="58" r="3.5" />
+        </g>
+      </svg>
+      <div class="intro-title">MemoryOps</div>
+      <p class="intro-sub">AI that remembers how your team solved problems before.</p>
+      <p class="intro-status">Loading team memory…</p>
+    </div>
+  </div>
+
+  <div class="app-shell" id="appShell">
     <!-- Top Header -->
     <header class="top-header" role="banner">
       <div class="brand-block">
