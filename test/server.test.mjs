@@ -186,23 +186,67 @@ test("concurrent seed clicks are rejected while one is in flight", async () => {
   assert.equal(calls.length, 1);
 });
 
-test("resolve retains today's solution and requires both fields", async () => {
-  const missing = await post("/api/resolve", { incident: INCIDENT });
-  assert.equal(missing.status, 400);
+test("resolve retains a structured, human-confirmed outcome and requires confirmation", async () => {
+  const unconfirmed = await post("/api/resolve", { incident: INCIDENT, worked: "Restored the limit." });
+  assert.equal(unconfirmed.status, 400);
+  assert.equal(unconfirmed.json.code, "not_confirmed");
+  const noFix = await post("/api/resolve", { incident: INCIDENT, confirmed: true });
+  assert.equal(noFix.status, 400);
+  assert.equal(calls.length, 0);
+
   handler = (req, body) => ({ json: { success: true, bank_id: "test-bank", items_count: body.items.length, async: false } });
-  const res = await post("/api/resolve", { incident: INCIDENT, resolution: "Restored the limit from 5 to 30." });
+  const res = await post("/api/resolve", {
+    incident: INCIDENT, area: "Checkout", confirmed: true, causeConfirmed: true,
+    cause: "Connection limit changed from 30 to 5.", attempted: "Restarted the app only.",
+    worked: "Restored the limit from 5 to 30.", outcome: "Orders normal.", lesson: "Compare connection settings first."
+  });
   assert.equal(res.status, 200);
-  assert.match(res.json.id, /^MO-\d{12}$/);
+  assert.match(res.json.id, /^MO-\d{8}-[A-Z0-9]{3}$/);
   const item = calls[0].body.items[0];
+  assert.match(item.content, /^Past solved problem MO-\d{8}-[A-Z0-9]{3} \(Checkout\)/);
+  assert.match(item.content, /Status: Human-confirmed resolution/);
+  assert.match(item.content, /Confirmed cause: Connection limit changed from 30 to 5\./);
+  assert.match(item.content, /Tried but did NOT fix it: Restarted the app only\./);
   assert.match(item.content, /What worked: Restored the limit from 5 to 30\./);
+  assert.equal(item.metadata.verification, "human-confirmed");
   assert.equal(item.document_id, `memoryops-${res.json.id}`);
+});
+
+test("a cause the human did not confirm is stored as suspected, not confirmed", async () => {
+  handler = (req, body) => ({ json: { success: true, bank_id: "test-bank", items_count: 1, async: false } });
+  const res = await post("/api/resolve", { incident: INCIDENT, confirmed: true, cause: "Maybe the cache.", worked: "Rolled back." });
+  assert.equal(res.json.causeStatus, "suspected");
+  const content = calls[0].body.items[0].content;
+  assert.match(content, /Suspected cause \(not confirmed\): Maybe the cache\./);
+  assert.doesNotMatch(content, /Confirmed cause/);
 });
 
 test("retain without success confirmation is reported as a failure", async () => {
   handler = () => ({ json: { success: false } });
-  const res = await post("/api/resolve", { incident: INCIDENT, resolution: "fixed" });
+  const res = await post("/api/resolve", { incident: INCIDENT, worked: "fixed", confirmed: true });
   assert.equal(res.status, 502);
   assert.equal(res.json.code, "hindsight_bad_response");
+});
+
+test("feedback is retained as a relevance hint and shown on the incident, never as an incident", async () => {
+  handler = (req, body) => ({ json: { success: true, bank_id: "test-bank", items_count: 1, async: false } });
+  const bad = await post("/api/feedback", { incidentId: "INC-1042", incident: INCIDENT });
+  assert.equal(bad.status, 400);
+  const res = await post("/api/feedback", { incidentId: "INC-1042", helpful: true, incident: INCIDENT });
+  assert.equal(res.status, 200);
+  const fb = calls[0].body.items[0];
+  assert.match(fb.content, /not a confirmed cause or fix/);
+  assert.match(fb.document_id, /^memoryops-feedback-INC-1042-/);
+
+  calls = [];
+  handler = (req) => req.url.endsWith("/memories/recall")
+    ? { json: {
+        results: [...recallWithCheckout.results, { id: "f9", text: "Feedback: INC-1042 helpful", document_id: "memoryops-feedback-INC-1042-1", chunk_id: "c9" }],
+        chunks: { ...recallWithCheckout.chunks, c9: { id: "c9", text: fb.content, chunk_index: 0 } } } }
+    : { json: { text: "", structured_output: { similar_problem_found: false, matched_incident_id: "", likely_pattern: "", first_checks: ["a"], why: "", safety_note: "", avoid: "", conflict_note: "", team_learned: "" } } };
+  const analyzed = await post("/api/analyze", { incident: INCIDENT });
+  assert.deepEqual(analyzed.json.matches.map((m) => m.incidentId), ["INC-1042", "INC-1088"]);
+  assert.equal(analyzed.json.matches[0].feedback[0].verdict, "Helpful");
 });
 
 test("Hindsight 401 maps to an auth error without leaking the key", async () => {
@@ -252,4 +296,83 @@ test("the API key is never served to the browser", async () => {
     assert.ok(!text.includes(FAKE_KEY), `${p} leaked the key`);
   }
   assert.equal((await fetch(base + "/../server.mjs")).status === 200, false);
+});
+
+// ---------------- Self-learning loop acceptance scenario ----------------
+// A stateful fake Hindsight: retained documents are recalled by word overlap, and reflect
+// matches the first recalled incident that shares enough words with today's problem.
+// This proves MemoryOps' plumbing (retain -> recall -> attribution); real semantic recall is
+// covered by `npm run smoke` against a real Hindsight bank.
+test("learning loop: fresh -> save confirmed fix -> reworded problem recalls it -> new outcome kept -> unrelated not matched", async () => {
+  const store = new Map();
+  const words = (t) => new Set(t.toLowerCase().match(/[a-z]{5,}/g) || []);
+  const overlap = (a, b) => [...words(a)].filter((w) => words(b).has(w)).length;
+  handler = (req, body) => {
+    if (req.url.endsWith("/memories")) {
+      for (const it of body.items) store.set(it.document_id, it);
+      return { json: { success: true, bank_id: "test-bank", items_count: body.items.length, async: false } };
+    }
+    if (req.url.endsWith("/memories/recall")) {
+      const hits = [...store.values()].filter((d) => overlap(d.content, body.query) >= 3);
+      return { json: {
+        results: hits.map((d, i) => ({ id: `f${i}`, text: d.content.split("\n")[1], document_id: d.document_id, chunk_id: `c${i}`, metadata: d.metadata })),
+        chunks: Object.fromEntries(hits.map((d, i) => [`c${i}`, { id: `c${i}`, text: d.content, chunk_index: 0 }]))
+      } };
+    }
+    if (req.url.endsWith("/reflect")) {
+      const today = body.query.match(/TODAY'S PROBLEM: (.*)/)[1];
+      const hit = [...store.values()].find((d) => body.query.includes(d.metadata.memoryops_id) && overlap(d.content, today) >= 4);
+      return { json: { text: "", structured_output: {
+        similar_problem_found: Boolean(hit), matched_incident_id: hit ? hit.metadata.memoryops_id : "",
+        likely_pattern: "p", first_checks: ["Compare connection settings", "Check saturation", "Check the release"],
+        why: "w", safety_note: "s", avoid: hit ? "Restarting alone did not fix it before." : "", conflict_note: "", team_learned: hit ? "t" : ""
+      } } };
+    }
+    return { status: 404, json: {} };
+  };
+
+  // TEST 1: fresh bank -> no fake match.
+  const r1 = await post("/api/analyze", { incident: "Customers cannot place orders after today's checkout update; checkout requests failing and the database appears overloaded." });
+  assert.equal(r1.json.state, "no_experience");
+  assert.equal(r1.json.matches.length, 0);
+  // TEST 7: analysis never writes to memory.
+  assert.equal([...calls].filter((c) => c.url.endsWith("/memories")).length, 0);
+  assert.equal(store.size, 0);
+
+  // TEST 2: save a confirmed checkout resolution.
+  const s1 = await post("/api/resolve", {
+    incident: "Customers cannot place orders after today's checkout update; checkout requests failing and the database appears overloaded.",
+    area: "Checkout", confirmed: true, causeConfirmed: true,
+    cause: "Database connection limit changed from 30 to 5 in the release.",
+    attempted: "Restarted the checkout service only; database timeouts returned.",
+    worked: "Restored the database connection limit to 30 and restarted checkout.",
+    lesson: "Checkout failures plus database timeouts after a release: compare database connection settings first."
+  });
+  assert.equal(s1.status, 200);
+
+  // TEST 3 + 4: reworded problem recalls the learned, verified incident with provenance.
+  const r2 = await post("/api/analyze", { incident: "Customers report that checkout becomes unavailable after today's release. Database requests are timing out and capacity appears exhausted." });
+  assert.equal(r2.json.state, "recommendation_ready");
+  assert.equal(r2.json.recommendation.matchedIncidentId, s1.json.id);
+  const m = r2.json.matches[0];
+  assert.equal(m.learned, true);
+  assert.equal(m.verified, true);
+  assert.match(m.fields.cause, /30 to 5/);
+  assert.match(m.fields.attempted, /Restarted the checkout service only/);
+  assert.match(r2.json.recommendation.avoid, /did not fix/);
+
+  // TEST 5: a different outcome is added without destroying the old one.
+  const s2 = await post("/api/resolve", {
+    incident: "Checkout unavailable after release; database requests timing out again.", area: "Checkout", confirmed: true, causeConfirmed: true,
+    cause: "A configuration template reset the database connection limit to 5.", worked: "Fixed the template and restored the limit to 30."
+  });
+  assert.equal(s2.status, 200);
+  assert.notEqual(s2.json.id, s1.json.id);
+  assert.equal(store.size, 2, "old experience kept");
+  assert.ok(!calls.some((c) => c.method === "DELETE"));
+
+  // TEST 6: unrelated problem is not matched to the checkout experience.
+  const r3 = await post("/api/analyze", { incident: "Marketing images on the company website load slowly for visitors in Europe." });
+  assert.equal(r3.json.recommendation.memoryUsed, false);
+  assert.notEqual(r3.json.state, "recommendation_ready");
 });

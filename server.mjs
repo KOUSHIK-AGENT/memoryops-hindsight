@@ -29,6 +29,7 @@ const seedIncidents = [
     happened: "Orders failed and database requests started timing out right after the update.",
     cause: "The database connection limit had accidentally been changed from 30 to 5 in the update, so the database could not serve enough checkout requests at once.",
     worked: "Restored the database connection limit to 30, restarted the checkout service, and verified that orders and database metrics returned to normal.",
+    attempted: "Restarting the checkout service alone; the database timeouts came back within minutes.",
     lesson: "When checkout failures and database timeouts appear immediately after an update, compare the database connection settings with the previous working configuration.",
     technical: "checkout-api returned HTTP 502; logs showed 'database acquire timeout'; PostgreSQL connection pool reduced from 30 to 5."
   },
@@ -75,9 +76,12 @@ const REFLECT_SCHEMA = {
     likely_pattern: { type: "string" },
     first_checks: { type: "array", items: { type: "string" } },
     why: { type: "string" },
-    safety_note: { type: "string" }
+    safety_note: { type: "string" },
+    avoid: { type: "string" },
+    conflict_note: { type: "string" },
+    team_learned: { type: "string" }
   },
-  required: ["similar_problem_found", "matched_incident_id", "likely_pattern", "first_checks", "why", "safety_note"]
+  required: ["similar_problem_found", "matched_incident_id", "likely_pattern", "first_checks", "why", "safety_note", "avoid", "conflict_note", "team_learned"]
 };
 
 function loadEnv(file) {
@@ -139,6 +143,12 @@ function requiredText(body, field, label) {
   return value;
 }
 
+function optionalText(body, field, max = 1000) {
+  const value = typeof body[field] === "string" ? body[field].trim() : "";
+  if (value.length > max) throw new ApiError(400, "validation", `${field} must be under ${max} characters.`);
+  return value;
+}
+
 function redact(text) {
   let s = String(text ?? "");
   if (API_KEY) s = s.split(API_KEY).join("[redacted]");
@@ -189,12 +199,14 @@ function incidentDocument(i) {
     content: [
       `Past solved problem ${i.id} (${i.area})`,
       `Title: ${i.title}`,
+      "Status: Confirmed resolution (sample history for the demo)",
       `What happened: ${i.happened}`,
       `Confirmed cause: ${i.cause}`,
+      i.attempted && `Tried but did NOT fix it: ${i.attempted}`,
       `What worked: ${i.worked}`,
       `Lesson learned: ${i.lesson}`,
       `Technical details: ${i.technical}`
-    ].join("\n"),
+    ].filter(Boolean).join("\n"),
     context: `Resolved incident report ${i.id} for the ${i.area.toLowerCase()} area`,
     timestamp: i.date,
     // Stable document_id => re-seeding replaces instead of duplicating.
@@ -251,7 +263,7 @@ async function reflect(query) {
 
 function parseFields(text) {
   const pick = (label) => {
-    const m = text.match(new RegExp(`^${label}:\\s*(.+)$`, "im"));
+    const m = text.match(new RegExp(`^${label.replace(/[()]/g, "\\$&")}:\\s*(.+)$`, "im"));
     return m ? m[1].trim() : null;
   };
   const head = text.match(/^Past solved problem\s+(\S+)\s*\(([^)]+)\)/im);
@@ -259,12 +271,24 @@ function parseFields(text) {
     incidentId: head ? head[1] : null,
     area: head ? head[2] : null,
     title: pick("Title"),
+    status: pick("Status"),
     happened: pick("What happened"),
     cause: pick("Confirmed cause"),
+    suspectedCause: pick("Suspected cause (not confirmed)"),
+    attempted: pick("Tried but did NOT fix it"),
     worked: pick("What worked"),
+    outcome: pick("Outcome"),
     lesson: pick("Lesson learned"),
-    technical: pick("Technical details")
+    technical: pick("Technical details"),
+    recordedAt: pick("Recorded at")
   };
+}
+
+function parseFeedback(text) {
+  const about = text.match(/^Team feedback on past incident\s+(\S+)/im);
+  const verdict = text.match(/^Verdict:\s*(.+)$/im);
+  const problem = text.match(/^For problem:\s*(.+)$/im);
+  return about ? { about: about[1], verdict: verdict ? verdict[1].trim() : null, problem: problem ? problem[1].trim() : null } : null;
 }
 
 // Group recalled facts by the Hindsight document they came from, in recall rank order.
@@ -281,18 +305,35 @@ export function groupRecall(data) {
     const s = r.scores?.reranker;
     if (typeof s === "number" && (doc.score === null || s > doc.score)) doc.score = s;
   }
-  return [...docs.values()].map((d) => {
-    const source = [...d.chunkIds].map((id) => chunks[id]).filter((c) => c && typeof c.text === "string")
-      .sort((a, b) => (a.chunk_index ?? 0) - (b.chunk_index ?? 0)).map((c) => c.text).join("\n");
+  const sourceText = (d) => [...d.chunkIds].map((id) => chunks[id]).filter((c) => c && typeof c.text === "string")
+    .sort((a, b) => (a.chunk_index ?? 0) - (b.chunk_index ?? 0)).map((c) => c.text).join("\n");
+
+  // Feedback memories are relevance hints about an incident, never incidents themselves.
+  const feedback = [];
+  const incidents = [];
+  for (const d of docs.values()) {
+    if (d.documentId?.startsWith("memoryops-feedback-")) {
+      const fb = parseFeedback(sourceText(d));
+      if (fb) feedback.push(fb);
+    } else {
+      incidents.push(d);
+    }
+  }
+  return incidents.map((d, idx) => {
+    const source = sourceText(d);
     const fields = source ? parseFields(source) : {};
     const idFromDoc = d.documentId?.startsWith("memoryops-") ? d.documentId.slice("memoryops-".length) : null;
+    const incidentId = d.metadata?.memoryops_id || fields.incidentId || idFromDoc || d.documentId || "Memory";
     return {
-      incidentId: d.metadata?.memoryops_id || fields.incidentId || idFromDoc || d.documentId || "Memory",
+      incidentId,
       documentId: d.documentId,
-      rank: d.rank,
+      rank: idx + 1,
       score: d.score,
+      learned: incidentId.startsWith("MO-") || d.metadata?.source === "memoryops-resolution",
+      verified: /^(human-)?confirmed/i.test(fields.status || ""),
       fields: source ? fields : null,
-      facts: d.facts.slice(0, 5)
+      facts: d.facts.slice(0, 5),
+      feedback: feedback.filter((f) => f.about === incidentId)
     };
   });
 }
@@ -318,7 +359,11 @@ export function shapeRecommendation(reflectData, matches) {
       pattern: cleanText(out.likely_pattern),
       checks: out.first_checks.map(cleanText).filter(Boolean).slice(0, 5),
       why: cleanText(out.why),
-      safety: cleanText(out.safety_note)
+      safety: cleanText(out.safety_note),
+      // Only meaningful when grounded in a recalled incident.
+      avoid: matchedId ? cleanText(out.avoid) : "",
+      conflict: cleanText(out.conflict_note),
+      teamLearned: matchedId ? cleanText(out.team_learned) : ""
     };
   }
   // Unstructured fallback: attribute to a recalled incident only if reflect names it.
@@ -340,7 +385,14 @@ function reflectPrompt(incident, matches) {
     "",
     `TODAY'S PROBLEM: ${incident}`,
     "",
-    `Past problems Hindsight recalled for this search: ${matches.map((m) => m.incidentId).join(", ") || "none"}.`,
+    `Past problems Hindsight recalled for this search: ${matches.map((m) => `${m.incidentId}${m.learned ? " (saved by the team after a real resolution)" : ""}`).join(", ") || "none"}.`,
+    "",
+    "How to weigh evidence:",
+    "- Human-confirmed causes and fixes are authoritative. A 'Suspected cause (not confirmed)' is only a lead; say so if you use it.",
+    "- Never recommend an action listed under 'Tried but did NOT fix it' as the main fix. Put it in avoid (e.g. 'Restarting the service alone did not fix this before'); otherwise avoid=\"\".",
+    "- If recalled past problems disagree about the cause or the fix, describe the disagreement in conflict_note and do not pick one as certain; otherwise conflict_note=\"\".",
+    "- 'Team feedback' memories only say whether a past incident was relevant to some problem. Use them as a relevance hint, never as a cause or fix.",
+    "- team_learned: one sentence summarising what this team has learned about this kind of problem, based only on stored memory; \"\" if nothing relevant.",
     "",
     "Decide whether one of these past problems is genuinely similar to today's problem (similar symptoms and circumstances, not just shared words).",
     "If yes: similar_problem_found=true and matched_incident_id=its exact id (for example INC-1042).",
@@ -413,24 +465,67 @@ async function api(req, res, url) {
 
   if (req.method === "POST" && url.pathname === "/api/resolve") {
     const body = await readJson(req);
+    // Only a human-confirmed outcome enters memory. AI recommendations are never retained.
+    if (body.confirmed !== true) {
+      throw new ApiError(400, "not_confirmed", "Confirm that this is what actually happened before saving it as experience.");
+    }
     const incident = requiredText(body, "incident", "The problem description");
-    const resolution = requiredText(body, "resolution", "The resolution");
+    const worked = typeof body.worked === "string" ? requiredText(body, "worked", "What actually fixed the problem") : requiredText(body, "resolution", "What actually fixed the problem");
+    const cause = optionalText(body, "cause");
+    const attempted = optionalText(body, "attempted");
+    const outcome = optionalText(body, "outcome");
+    const lesson = optionalText(body, "lesson");
+    const area = optionalText(body, "area", 60).replace(/[()\n]/g, " ") || "Saved from MemoryOps";
+    const causeConfirmed = body.causeConfirmed === true;
+
     const now = new Date();
-    const id = `MO-${now.toISOString().slice(0, 19).replace(/\D/g, "").slice(2)}`;
+    // Unique per save (timestamp + random suffix) so no earlier experience is ever replaced.
+    const id = `MO-${now.toISOString().slice(5, 16).replace(/\D/g, "")}-${Math.random().toString(36).slice(2, 5).toUpperCase().padEnd(3, "0")}`;
     const title = incident.split(/(?<=[.!?])\s/)[0].slice(0, 160);
     const result = await retain([{
       content: [
-        `Past solved problem ${id} (Saved from MemoryOps)`,
+        `Past solved problem ${id} (${area})`,
         `Title: ${title}`,
+        "Status: Human-confirmed resolution (saved by the team after the problem was fixed)",
         `What happened: ${incident}`,
-        `What worked: ${resolution}`
-      ].join("\n"),
-      context: `Resolved problem ${id} saved by the team in MemoryOps`,
+        cause && (causeConfirmed ? `Confirmed cause: ${cause}` : `Suspected cause (not confirmed): ${cause}`),
+        attempted && `Tried but did NOT fix it: ${attempted}`,
+        `What worked: ${worked}`,
+        outcome && `Outcome: ${outcome}`,
+        lesson && `Lesson learned: ${lesson}`,
+        `Recorded at: ${now.toISOString()}`
+      ].filter(Boolean).join("\n"),
+      context: `Human-confirmed resolution ${id} saved by the team in MemoryOps`,
       timestamp: now.toISOString(),
+      // A new document per resolution: earlier experience is never overwritten.
       document_id: `memoryops-${id}`,
-      metadata: { memoryops_id: id, source: "memoryops-resolution" }
+      metadata: { memoryops_id: id, source: "memoryops-resolution", verification: "human-confirmed", cause_status: cause ? (causeConfirmed ? "confirmed" : "suspected") : "unknown" }
     }]);
-    return send(res, 200, { ok: true, id, stored: result.items_count ?? 1 });
+    return send(res, 200, { ok: true, id, stored: result.items_count ?? 1, causeStatus: cause ? (causeConfirmed ? "confirmed" : "suspected") : "unknown" });
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/feedback") {
+    const body = await readJson(req);
+    const incidentId = requiredText(body, "incidentId", "The incident id");
+    if (!/^[A-Z]{2,5}-[A-Za-z0-9-]{1,30}$/.test(incidentId)) throw new ApiError(400, "validation", "Unknown incident id.");
+    if (typeof body.helpful !== "boolean") throw new ApiError(400, "validation", "helpful must be true or false.");
+    const incident = requiredText(body, "incident", "The problem description");
+    const now = new Date();
+    const verdict = body.helpful ? "Helpful" : "Not relevant";
+    await retain([{
+      content: [
+        `Team feedback on past incident ${incidentId}`,
+        `Verdict: ${verdict}`,
+        `For problem: ${incident.slice(0, 500)}`,
+        "Note: This is feedback about relevance only, not a confirmed cause or fix.",
+        `Recorded at: ${now.toISOString()}`
+      ].join("\n"),
+      context: `Team feedback: ${incidentId} was ${verdict.toLowerCase()} for a new problem`,
+      timestamp: now.toISOString(),
+      document_id: `memoryops-feedback-${incidentId}-${now.getTime()}`,
+      metadata: { source: "memoryops-feedback", about: incidentId, verdict }
+    }]);
+    return send(res, 200, { ok: true, verdict });
   }
 
   return false;

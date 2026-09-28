@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node server.mjs",
     "dev": "node server.mjs",
-    "test": "node --test test/server.test.mjs"
+    "test": "node --test test/server.test.mjs",
+    "smoke": "node scripts/smoke.mjs"
   },
   "engines": {
     "node": ">=18"
