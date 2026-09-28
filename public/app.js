@@ -1,819 +1,796 @@
 /**
- * MemoryOps — Incident Response Agent with Hindsight Memory
- * Microsoft-Grade Enterprise Frontend Controller
+ * MemoryOps frontend.
+ * Everything shown as memory comes from the server's real Hindsight recall/reflect results and
+ * MemoryOps' deterministic evidence reasoning. Nothing here invents matches, numbers or fixes.
  */
 
-const DEFAULT_INCIDENT = "Customers are unable to place orders after today's checkout update. Some checkout requests are failing, and the database appears overloaded. The problem started immediately after the latest update.";
-const DEFAULT_RESOLUTION = "Restored the database connection limit from 5 to 30, restarted the checkout service, and confirmed orders were working normally again.";
-
+const PRESETS = {
+  round1: {
+    problem: "Customers are unable to place orders after today's checkout update. Some checkout requests are failing, and the database appears overloaded. The problem started immediately after the latest update.",
+    area: "Checkout",
+    cause: "The database connection limit was changed from 30 to 5 in today's update.",
+    causeConfirmed: true,
+    attempted: "Restarted the checkout service only; the database timeouts came back within minutes.",
+    worked: "Restored the database connection limit from 5 to 30, restarted the checkout service, and confirmed orders were working normally again.",
+    outcome: "Orders returned to normal and database timeouts stopped.",
+    lesson: "For checkout failures plus database timeouts right after an update, compare database connection settings with the last known-good configuration first.",
+    observation: "Current pool is 5. Previous version was 30."
+  },
+  round2: {
+    problem: "Customers report that checkout becomes unavailable after today's release. Database requests are timing out and capacity appears exhausted.",
+    area: "Checkout",
+    cause: "A shared configuration template reset the database connection limit to 5 during the release.",
+    causeConfirmed: true,
+    attempted: "Added more checkout servers; no improvement, because the database connection limit was still 5.",
+    worked: "Fixed the shared configuration template, restored the connection limit to 30, and redeployed checkout.",
+    outcome: "Checkout recovered and database connections returned to the normal range.",
+    lesson: "If the connection limit drops again after a release, check the shared configuration template, not just the service settings.",
+    observation: "Pool is 5 again. The shared configuration template changed in this release."
+  },
+  round3: {
+    problem: "After this afternoon's deployment the order page times out and the database reports it has no free connections left.",
+    area: "Checkout",
+    cause: "The deployment's new container settings capped each checkout instance at 3 database connections.",
+    causeConfirmed: true,
+    attempted: "Scaled out checkout instances; errors got worse.",
+    worked: "Raised the per-instance database connection limit back to 20 and redeployed checkout.",
+    outcome: "Order page recovered and database connection waits disappeared.",
+    lesson: "When checkout times out after a deployment, check per-instance database connection limits in the new settings.",
+    observation: "Each checkout instance is limited to 3 database connections."
+  },
+  round4: {
+    problem: "Checkout started failing right after today's release; customers see an error when submitting orders, but database connections look healthy.",
+    area: "Checkout",
+    cause: "The tax service's TLS certificate expired the same morning because automatic renewal had failed.",
+    causeConfirmed: true,
+    attempted: "Rolled back the release; errors continued.",
+    worked: "Renewed the tax service certificate and fixed the renewal job.",
+    outcome: "Orders succeeded again.",
+    lesson: "If checkout fails after a release but database connections are healthy, check certificate expiry on the services checkout calls.",
+    observation: "Connection pool is 30 as usual. Logs show the tax service certificate has expired."
+  },
+  unrelated: {
+    problem: "Product images on the company website load very slowly for visitors in Europe since this morning. Pages open, but pictures take a long time to appear.",
+    area: "Website",
+    cause: "An image caching rule for European visitors had expired.",
+    causeConfirmed: true,
+    attempted: "",
+    worked: "Restored the regional image caching rule and cleared the cache.",
+    outcome: "Images load quickly again for European visitors.",
+    lesson: "Slow images in one region: check that region's caching rules first.",
+    observation: ""
+  }
+};
+const SAVE_FIELDS = ["area", "cause", "attempted", "outcome", "lesson"];
+const VERIFY_FIRST = "Past incidents are evidence, not certainty. Verify today's system before applying a previous fix.";
 const $ = (id) => document.getElementById(id);
+const show = (el, on = true) => { if (el) el.hidden = !on; };
 
-let state = {
-  mode: "hindsight", // "hindsight" | "mock"
-  bankId: "Project",
-  hasApiKey: true,
-  memoryCount: null,
-  recalledCount: 0,
-  hasSeededInSession: false,
-  isAnalyzing: false,
-  isSeeding: false,
-  isResolving: false
+const state = {
+  connected: false,
+  documents: null,
+  counts: null,
+  demoState: "ready",
+  analyses: 0,
+  lastAnalysis: null,
+  hypotheses: [],
+  observations: [],
+  observationHint: "",
+  nextBestCheck: null,
+  suggestedFix: null,
+  busy: { analyze: false, seed: false, resolve: false }
 };
 
-// ============================================================
-// API COMMUNICATION
-// ============================================================
+// ------------------------------------------------------------ API
 
 async function apiRequest(path, options = {}) {
-  const response = await fetch(path, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...(options.headers || {})
-    }
-  });
-
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const error = new Error(data.error || `HTTP error ${response.status}: ${response.statusText}`);
-    error.status = response.status;
-    error.details = data;
-    throw error;
+  let response;
+  try {
+    response = await fetch(path, { ...options, headers: { "Content-Type": "application/json", ...(options.headers || {}) } });
+  } catch {
+    throw Object.assign(new Error("Cannot reach the MemoryOps server. Is it still running?"), { code: "server_unreachable" });
   }
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw Object.assign(new Error(data.error || `Request failed (${response.status}).`), { status: response.status, code: data.code, detail: data.detail });
   return data;
 }
 
-// ============================================================
-// TOAST & ERROR DISPLAY
-// ============================================================
+// ------------------------------------------------------------ Toast, error banner
 
 let toastTimer = null;
 function showToast(message, type = "success") {
-  const toastEl = $("toast");
-  toastEl.textContent = message;
-  toastEl.className = `toast show toast-${type}`;
+  const el = $("toast");
+  el.textContent = message;
+  el.className = `toast show toast-${type}`;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => {
-    toastEl.classList.remove("show");
-  }, 4000);
+  toastTimer = setTimeout(() => el.classList.remove("show"), 3600);
 }
 
-function showBannerError(userFriendlyMsg, rawError = "") {
-  const banner = $("errorBanner");
-  const msgEl = $("errorMessage");
-  const detailsEl = $("errorDetails");
-  msgEl.textContent = userFriendlyMsg;
-  if (rawError) {
-    detailsEl.textContent = typeof rawError === "object" ? JSON.stringify(rawError, null, 2) : String(rawError);
-    $("errorToggleDetails").style.display = "inline";
-  } else {
-    $("errorToggleDetails").style.display = "none";
-  }
-  banner.style.display = "flex";
+function showBannerError(err) {
+  $("errorMessage").textContent = err.message || "Memory service error.";
+  const detail = [err.code, err.detail].filter(Boolean).join(": ");
+  $("errorDetails").textContent = detail;
+  show($("errorToggleDetails"), Boolean(detail));
+  show($("errorBanner"));
+  setDemoState("error", { message: err.message });
 }
+function hideBannerError() { show($("errorBanner"), false); show($("errorDetails"), false); }
+$("errorToggleDetails").addEventListener("click", () => { const d = $("errorDetails"); d.hidden = !d.hidden; });
 
-function hideBannerError() {
-  $("errorBanner").style.display = "none";
-  $("errorDetails").style.display = "none";
-}
+// ------------------------------------------------------------ Steps, loop, log
 
-$("errorToggleDetails").addEventListener("click", () => {
-  const details = $("errorDetails");
-  details.style.display = details.style.display === "none" ? "block" : "none";
-});
-
-// ============================================================
-// DEMO PROGRESS STEPPER
-// ============================================================
-
-function setStep(currentStep) {
+function setStep(current, allDone = false) {
   for (let i = 1; i <= 4; i++) {
-    const stepEl = $(`step${i}`);
-    if (!stepEl) continue;
-    stepEl.classList.remove("active", "completed");
-    if (i < currentStep) {
-      stepEl.classList.add("completed");
-      stepEl.querySelector(".step-num").innerHTML = "&#10003;";
-    } else if (i === currentStep) {
-      stepEl.classList.add("active");
-      stepEl.querySelector(".step-num").textContent = i;
-    } else {
-      stepEl.querySelector(".step-num").textContent = i;
-    }
+    const el = $(`step${i}`);
+    el.classList.remove("active", "completed");
+    const done = i < current || (allDone && i === current);
+    if (done) el.classList.add("completed");
+    else if (i === current) el.classList.add("active");
+    el.querySelector(".step-num").textContent = done ? "✓" : String(i);
   }
 }
 
-// ============================================================
-// MEMORY STATE COMPONENT
-// ============================================================
+function setPipeline(nodes) {
+  for (const id of ["learnProblem", "learnRecalled", "learnVerify", "learnSaved", "learnFuture"]) {
+    $(id).classList.remove("active", "highlighted");
+    if (nodes[id]) $(id).classList.add(nodes[id]);
+  }
+}
 
-function updateMemoryState(stateType, count = null) {
-  const banner = $("memoryStateBanner");
-  const headline = $("stateHeadline");
-  const description = $("stateDescription");
+function logLearning(html) {
+  const log = $("learningLog");
+  log.querySelector(".log-empty")?.remove();
+  log.insertAdjacentHTML("beforeend", `<li>${html}</li>`);
+  while (log.children.length > 6) log.firstElementChild.remove();
+}
+
+// ------------------------------------------------------------ Status (rail)
+
+const STATES = {
+  ready: { tone: "", headline: "Ready", text: () => "Describe today's problem, then analyze it." },
+  memory_available: { tone: "memory", headline: "Past experience available", text: () => `${countLabel(state.documents)} in this Hindsight bank.` },
+  no_experience: { tone: "", headline: "No similar experience found", text: (x) => x.searched ? "Hindsight searched team memory, but nothing matched closely enough to rely on." : "This team has not solved a closely related problem yet." },
+  match_found: { tone: "memory", headline: "Similar experience recalled", text: (x) => `Hindsight recalled ${x.id}, but the recommendation step failed: ${x.message}` },
+  recommendation_ready: { tone: "memory", headline: "Memory used", text: (x) => `Recommendation based on ${x.id}, a problem your team solved before.` },
+  saved: { tone: "memory", headline: "Experience learned", text: (x) => `${x.id} is stored in Hindsight and can help next time.` },
+  error: { tone: "error", headline: "Memory service error", text: (x) => x.message }
+};
+
+function countLabel(n) {
+  if (!Number.isFinite(n)) return "Past experience";
+  return n === 1 ? "1 memory" : `${n} memories`;
+}
+
+function setDemoState(key, extra = {}) {
+  const def = STATES[key];
+  state.demoState = key;
+  const box = $("memoryStateBanner");
+  box.dataset.tone = def.tone;
+  $("stateHeadline").textContent = def.headline;
+  $("stateDescription").textContent = def.text(extra);
+}
+
+function setStat(id, value) { $(id).textContent = Number.isFinite(value) ? String(value) : "—"; }
+
+function renderCounts() {
+  const c = state.counts || {};
+  setStat("statHistorical", c.historical);
+  setStat("statLearned", c.learned);
+  setStat("statPatterns", c.patterns);
   const badge = $("memoryBadge");
-  const compareBefore = $("compareBefore");
-  const compareAfter = $("compareAfter");
-
-  banner.classList.remove("state-empty", "state-loaded", "state-recalled");
-
-  if (stateType === "empty") {
-    banner.classList.add("state-empty");
-    headline.textContent = "No past experience yet";
-    description.textContent = "MemoryOps has not learned any resolved incidents yet.";
-    badge.textContent = "0 memories stored";
-    badge.className = "badge badge-neutral";
-    compareBefore.style.opacity = "1";
-    compareAfter.style.opacity = "0.6";
-  } else if (stateType === "loaded") {
-    banner.classList.add("state-loaded");
-    const countText = count !== null ? `${count} resolved incidents remembered` : "Past incidents loaded in memory";
-    headline.textContent = "Past experience loaded";
-    description.textContent = countText;
-    badge.textContent = countText;
-    badge.className = "badge badge-memory";
-    compareBefore.style.opacity = "0.7";
-    compareAfter.style.opacity = "1";
-    $("pipelineRecalled").classList.add("active");
-  } else if (stateType === "recalled") {
-    banner.classList.add("state-recalled");
-    const foundText = count === 1 ? "1 similar past incident found" : `${count} similar past incidents found`;
-    headline.textContent = "Relevant memory found";
-    description.textContent = foundText;
-    badge.textContent = foundText;
-    badge.className = "badge badge-accent";
-    compareBefore.style.opacity = "0.5";
-    compareAfter.style.opacity = "1";
-    $("pipelineRecalled").classList.add("highlighted");
-    $("pipelineBetter").classList.add("highlighted");
-  }
+  if (!state.connected) badge.textContent = "Memory unavailable";
+  else if (Number.isFinite(state.documents)) badge.textContent = state.documents ? `${countLabel(state.documents)}` : "Memory is empty";
+  else badge.textContent = "";
 }
 
-// ============================================================
-// STATUS REFRESH
-// ============================================================
+// "What MemoryOps knows": real counts from /api/knowledge, never estimates.
+async function refreshKnowledge() {
+  try {
+    const k = await apiRequest("/api/knowledge");
+    const n = (v) => (Number.isFinite(v) ? v : "—");
+    const t = k.team;
+    const rows = [
+      ["TEAM_MEMORY", t ? `${n(t.confirmed)} confirmed team incidents` : "Team memory unavailable", t ? `${n(t.historical)} imported · ${n(t.learned)} learned here` : (k.teamError || "")],
+      ["TEAM_PATTERN", t ? `${n(t.patterns)} patterns · ${n(t.playbooks)} playbooks` : "—", "Only from 3+ confirmed incidents"],
+      ["CURATED_KNOWLEDGE", `${k.curated.entries} troubleshooting entries`, `${k.curated.technologies} technologies · synthetic, written for MemoryOps`],
+      ["PUBLIC_DOCUMENTATION", `${k.documentation.chunks} documentation excerpts`, k.documentation.publishers.length ? k.documentation.publishers.join(", ") : "Run npm run knowledge:fetch to add"],
+      ["GENERAL_KNOWLEDGE", "General reasoning fallback", "Lowest priority, always labelled"]
+    ];
+    $("knowsList").innerHTML = rows.map(([src, main, sub]) => `<li>${srcTag(src)}<span class="knows-main">${esc(main)}</span><span class="knows-sub">${esc(sub)}</span></li>`).join("");
+    const LEVEL = { ESTABLISHED: "Established team experience", SOME: "Some team experience", NO: "No team experience yet" };
+    $("maturityList").innerHTML = k.maturity.map((r) => `<li class="mat mat-${r.level.toLowerCase()}"><span class="mat-area">${esc(r.label)}</span>
+      <span class="mat-level">${LEVEL[r.level]}${r.confirmedIncidents ? ` · ${r.confirmedIncidents}` : ""}</span>
+      ${r.level === "NO" && r.documentedEntries ? `<span class="mat-doc">${r.documentedEntries} documented entries</span>` : ""}</li>`).join("");
+  } catch {
+    $("knowsList").innerHTML = `<li class="muted">Could not load knowledge counts.</li>`;
+  }
+}
 
 async function refreshStatus() {
+  refreshKnowledge();
   try {
     const s = await apiRequest("/api/status");
-    state.mode = s.mode;
-    state.bankId = s.bankId;
-    state.hasApiKey = s.hasApiKey;
-    state.memoryCount = s.memoryCount;
-
+    state.connected = s.connected;
+    state.documents = s.documents;
+    state.counts = s.counts || null;
     const dot = $("dot");
-    const modeEl = $("mode");
-    const bankEl = $("bank");
-
-    if (s.mode === "mock") {
-      dot.className = "status-dot warn";
-      modeEl.textContent = "Mock mode (Local)";
-      bankEl.textContent = "Memory bank: In-Memory";
-    } else if (s.hasApiKey) {
+    if (s.connected) {
       dot.className = "status-dot ok";
-      modeEl.textContent = "Hindsight Connected \u2713";
-      bankEl.textContent = `Memory bank: ${s.bankId}`;
-    } else {
+      $("mode").textContent = "Hindsight connected";
+      $("bank").textContent = `${s.bankId}${s.pendingOperations > 0 ? ` · processing ${s.pendingOperations}` : ""}`;
+    } else if (!s.hasApiKey) {
       dot.className = "status-dot warn";
-      modeEl.textContent = "Hindsight key missing";
-      bankEl.textContent = "Check .env configuration";
+      $("mode").textContent = "Hindsight key missing";
+      $("bank").textContent = "Add HINDSIGHT_API_KEY to .env";
+    } else {
+      dot.className = "status-dot error";
+      $("mode").textContent = "Hindsight not reachable";
+      $("bank").textContent = s.bankId || "";
     }
-
-    if (Number.isFinite(s.memoryCount) && s.memoryCount > 0) {
-      updateMemoryState("loaded", s.memoryCount);
-    } else if (state.hasSeededInSession) {
-      updateMemoryState("loaded", 3);
-    } else if (state.recalledCount === 0) {
-      updateMemoryState("empty");
-    }
+    renderCounts();
+    if (state.demoState === "ready" || state.demoState === "memory_available") setDemoState(state.documents > 0 ? "memory_available" : "ready");
+    if (!s.connected && s.hasApiKey) showBannerError({ message: s.error || "Hindsight is not reachable.", code: s.code });
   } catch (err) {
     $("dot").className = "status-dot error";
-    $("mode").textContent = "Service unavailable";
-    $("bank").textContent = "Unable to connect to server";
-    showBannerError("Memory service is temporarily unavailable.", err.message);
+    $("mode").textContent = "Server unavailable";
+    $("bank").textContent = "";
+    showBannerError(err);
   }
 }
 
-// ============================================================
-// SEED / LOAD PAST SOLVED INCIDENTS
-// ============================================================
+// ------------------------------------------------------------ Busy buttons
 
-$("seed").addEventListener("click", async () => {
-  if (state.isSeeding || state.isAnalyzing) return;
-  state.isSeeding = true;
+async function withBusy(key, btn, label, fn) {
+  if (state.busy[key]) return;
+  state.busy[key] = true;
+  const original = btn.innerHTML;
+  btn.disabled = true;
+  btn.setAttribute("aria-busy", "true");
+  btn.innerHTML = `<span class="pulse" aria-hidden="true"></span><span>${label}</span>`;
+  try { await fn(); } finally {
+    state.busy[key] = false;
+    btn.disabled = false;
+    btn.removeAttribute("aria-busy");
+    btn.innerHTML = original;
+  }
+}
+
+// ------------------------------------------------------------ Load sample history
+
+$("seed").addEventListener("click", () => withBusy("seed", $("seed"), "Storing…", async () => {
   hideBannerError();
-
-  const seedBtn = $("seed");
-  const origHtml = seedBtn.innerHTML;
-  seedBtn.disabled = true;
-  seedBtn.innerHTML = `
-    <span class="spinner" style="width:14px;height:14px;border-width:2px;margin:0;display:inline-block;"></span>
-    <span>Loading past incidents…</span>
-  `;
-
   try {
     const res = await apiRequest("/api/seed", { method: "POST", body: "{}" });
-    state.hasSeededInSession = true;
-    const seededCount = res.seeded || 3;
-    updateMemoryState("loaded", seededCount);
-    showToast(`Loaded ${seededCount} resolved incidents into Hindsight memory.`, "success");
+    showToast(`Stored ${res.seeded} sample resolved incidents in Hindsight.`);
+    logLearning(`Loaded ${res.seeded} sample resolved incidents`);
     await refreshStatus();
+    if (!["recommendation_ready", "match_found", "saved"].includes(state.demoState)) setDemoState("memory_available");
   } catch (err) {
-    showToast("Failed to load past incidents.", "error");
-    showBannerError("Memory service is temporarily unavailable.", err.message);
-  } finally {
-    state.isSeeding = false;
-    seedBtn.disabled = false;
-    seedBtn.innerHTML = origHtml;
+    showToast("Could not store sample incidents.", "error");
+    showBannerError(err);
   }
-});
+}));
 
-// ============================================================
-// ANALYZE INCIDENT
-// ============================================================
+// ------------------------------------------------------------ Analyze
 
-let loadingTimer1 = null;
-let loadingTimer2 = null;
+let stageTimer = null;
+function startStages() {
+  const items = [...document.querySelectorAll("#analysisLoading li")];
+  items.forEach((li) => li.classList.remove("is-active", "is-done"));
+  let i = 0;
+  items[0].classList.add("is-active");
+  show($("analysisLoading"));
+  clearInterval(stageTimer);
+  // Stages describe what the pipeline does; the last stays active until the answer arrives (no fake %).
+  stageTimer = setInterval(() => {
+    if (i >= items.length - 1) return clearInterval(stageTimer);
+    items[i].classList.replace("is-active", "is-done");
+    items[++i].classList.add("is-active");
+  }, 850);
+}
+function stopStages() { clearInterval(stageTimer); show($("analysisLoading"), false); }
 
-$("analyze").addEventListener("click", async () => {
-  if (state.isAnalyzing) return;
-
-  const incidentText = $("incident").value.trim();
-  const errorEl = $("incidentError");
-
-  if (!incidentText) {
-    errorEl.textContent = "Describe the problem before analyzing it.";
-    errorEl.style.display = "block";
+function analyze() {
+  const text = $("incident").value.trim();
+  if (!text) {
+    $("incidentError").textContent = "Describe what is happening first.";
+    show($("incidentError"));
     $("incident").focus();
     return;
   }
-  errorEl.style.display = "none";
-  hideBannerError();
+  show($("incidentError"), false);
 
-  state.isAnalyzing = true;
-  setStep(2);
-  $("pipelineSearch").classList.add("active");
+  return withBusy("analyze", $("analyze"), "Analyzing…", async () => {
+    hideBannerError();
+    setStep(2);
+    setPipeline({ learnProblem: "active" });
+    show($("analysisEmpty"), false);
+    show($("results"), false);
+    startStages();
 
-  const analyzeBtn = $("analyze");
-  const origBtnHtml = analyzeBtn.innerHTML;
-  analyzeBtn.disabled = true;
-  analyzeBtn.innerHTML = `
-    <span class="spinner" style="width:14px;height:14px;border-width:2px;margin:0;display:inline-block;"></span>
-    <span>Analyzing…</span>
-  `;
+    try {
+      const data = await apiRequest("/api/analyze", { method: "POST", body: JSON.stringify({ incident: text }) });
+      stopStages();
+      const rec = data.recommendation;
+      const matched = rec?.memoryUsed ? data.matches.find((m) => m.incidentId === rec.matchedIncidentId) : null;
+      if (state.lastAnalysis?.incident !== text) state.observations = [];
+      state.hypotheses = data.evidence?.hypotheses || [];
+      state.analyses += 1;
+      state.lastAnalysis = { incident: text, matchedId: matched?.incidentId || null };
+      setStat("statRelevant", data.evidence ? data.evidence.relevant.length : data.matches.length);
+      renderObservations();
+      renderResults(data, matched);
+      show($("learnSection"));
+      setStep(3);
+      const n = state.analyses;
 
-  // UI loading state in results
-  $("analysisEmpty").style.display = "none";
-  $("recommendationContent").style.display = "none";
-  $("analysisLoading").style.display = "flex";
-
-  const stageEl = $("loadingStage");
-  stageEl.textContent = "Searching past experience…";
-
-  loadingTimer1 = setTimeout(() => {
-    if (state.isAnalyzing) stageEl.textContent = "Comparing similar incidents…";
-  }, 700);
-
-  loadingTimer2 = setTimeout(() => {
-    if (state.isAnalyzing) stageEl.textContent = "Preparing recommendation…";
-  }, 1600);
-
-  try {
-    const data = await apiRequest("/api/analyze", {
-      method: "POST",
-      body: JSON.stringify({ incident: incidentText })
-    });
-
-    clearTimeout(loadingTimer1);
-    clearTimeout(loadingTimer2);
-
-    const parsedRec = parseRecommendationText(data.recommendation);
-    
-    // Check if reflection states that there was NO historical pattern match
-    const hasTruePatternMatch = parsedRec.hasStructure && 
-      !isNoneMatch(parsedRec.likelyPattern) && 
-      !isNoneMatch(parsedRec.whyEvidence) && 
-      (data.recalled || []).length > 0;
-
-    const matchedRecalledItems = hasTruePatternMatch ? (data.recalled || []) : [];
-    state.recalledCount = matchedRecalledItems.length;
-
-    // Render results
-    renderRecommendation(data.recommendation, matchedRecalledItems, hasTruePatternMatch);
-    renderMemories(matchedRecalledItems);
-
-    if (hasTruePatternMatch && state.recalledCount > 0) {
-      updateMemoryState("recalled", 1);
-      $("recallBadge").textContent = `1 similar past incident found`;
-      $("recallBadge").className = "badge badge-accent";
-      showToast(`Similar solved problem recalled from memory.`, "success");
-    } else {
-      $("recallBadge").textContent = "0 recalled";
-      $("recallBadge").className = "badge badge-subtle";
-      showToast("No similar past incidents found. Showing general troubleshooting.", "warn");
+      if (data.state === "recommendation_ready" && matched) {
+        setDemoState("recommendation_ready", { id: matched.incidentId });
+        setPipeline({ learnProblem: "active", learnRecalled: "highlighted", ...(matched.learned ? { learnFuture: "highlighted" } : {}) });
+        const origin = matched.learned ? ", learned from a previous resolution" : matched.verified ? ", confirmed" : "";
+        logLearning(`Analysis ${n}: <strong>1 relevant resolved incident recalled</strong> (${esc(matched.incidentId)}${origin})`);
+      } else if (data.state === "match_found") {
+        setDemoState("match_found", { id: data.matches[0]?.incidentId, message: data.reflectError?.message || "unknown error" });
+        setPipeline({ learnProblem: "active", learnRecalled: "highlighted" });
+        logLearning(`Analysis ${n}: ${data.matches.length} memories recalled; recommendation step failed`);
+      } else {
+        setDemoState("no_experience", { searched: data.matches.length > 0 });
+        setPipeline({ learnProblem: "active" });
+        logLearning(data.matches.length
+          ? `Analysis ${n}: ${data.matches.length} memories recalled, <strong>none judged similar</strong>`
+          : `Analysis ${n}: <strong>0 relevant memories recalled</strong>`);
+      }
+      $("results").scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
+    } catch (err) {
+      stopStages();
+      show($("analysisEmpty"));
+      setStep(1);
+      setPipeline({});
+      showToast("Analysis failed.", "error");
+      showBannerError(err);
     }
-
-    setStep(3);
-  } catch (err) {
-    clearTimeout(loadingTimer1);
-    clearTimeout(loadingTimer2);
-    $("analysisLoading").style.display = "none";
-    $("analysisEmpty").style.display = "flex";
-    showToast("Analysis failed.", "error");
-    showBannerError("Memory service is temporarily unavailable.", err.message);
-  } finally {
-    state.isAnalyzing = false;
-    analyzeBtn.disabled = false;
-    analyzeBtn.innerHTML = origBtnHtml;
-  }
-});
-
-function isNoneMatch(text) {
-  if (!text) return true;
-  const t = text.trim().toLowerCase();
-  return t.startsWith("none") || t.startsWith("no prior incident") || t.startsWith("no historical pattern");
-}
-
-// ============================================================
-// STRUCTURED RECOMMENDATION RENDERER
-// ============================================================
-
-function renderRecommendation(rawText, recalledItems, hasTrueMatch) {
-  $("analysisLoading").style.display = "none";
-  const container = $("recommendationContent");
-  container.innerHTML = "";
-  container.style.display = "flex";
-
-  const contextBadge = $("recommendationContextBadge");
-
-  if (hasTrueMatch) {
-    contextBadge.textContent = "Informed by past team memory";
-    contextBadge.className = "badge badge-memory";
-  } else {
-    contextBadge.textContent = "General triage (no past memory)";
-    contextBadge.className = "badge badge-subtle";
-  }
-
-  // Parse structured sections if returned from Hindsight reflect
-  const parsed = parseRecommendationText(rawText);
-
-  if (hasTrueMatch && parsed.hasStructure) {
-    // 1. Likely Pattern
-    if (parsed.likelyPattern) {
-      const block = document.createElement("div");
-      block.className = "rec-block rec-block-pattern";
-      block.innerHTML = `
-        <div class="rec-label">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="m10 15 5-3-5-3v6Z"/></svg>
-          Likely Pattern
-        </div>
-        <p class="rec-text">${formatInlineCode(escapeHtml(parsed.likelyPattern))}</p>
-      `;
-      container.appendChild(block);
-    }
-
-    // 2. Recommended First Checks
-    if (parsed.checks && parsed.checks.length > 0) {
-      const block = document.createElement("div");
-      block.className = "rec-block rec-block-checks";
-      const checksHtml = parsed.checks.map((check, idx) => `
-        <li class="check-item">
-          <span class="check-num">${idx + 1}</span>
-          <span>${cleanCheckText(check)}</span>
-        </li>
-      `).join("");
-
-      block.innerHTML = `
-        <div class="rec-label">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
-          Recommended First Checks
-        </div>
-        <ul class="checks-list">${checksHtml}</ul>
-      `;
-      container.appendChild(block);
-    }
-
-    // 3. Why These Checks?
-    const blockEvidence = document.createElement("div");
-    blockEvidence.className = "rec-block rec-block-evidence";
-    const evidenceText = parsed.whyEvidence || "Based on a similar problem your team solved previously.";
-    blockEvidence.innerHTML = `
-      <div class="rec-label">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
-        Why These Checks?
-      </div>
-      <p class="rec-text">
-        <strong style="color:#e2e8f0;">Based on a similar problem your team solved previously.</strong><br>
-        ${formatInlineCode(escapeHtml(evidenceText))}
-      </p>
-    `;
-    container.appendChild(blockEvidence);
-
-    // 4. Safety Note / Verification
-    const blockSafety = document.createElement("div");
-    blockSafety.className = "rec-block rec-block-safety";
-    const safetyDetail = parsed.safetyNote ? `<br>${formatInlineCode(escapeHtml(parsed.safetyNote))}` : "";
-    blockSafety.innerHTML = `
-      <div class="rec-label">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-        Safety Note
-      </div>
-      <p class="rec-text">
-        Past incidents are evidence, not certainty. Verify today's metrics and configuration before applying a previous fix.${safetyDetail}
-      </p>
-    `;
-    container.appendChild(blockSafety);
-
-  } else {
-    // General Troubleshooting (Without matching past memory)
-    const blockNotice = document.createElement("div");
-    blockNotice.className = "rec-block rec-block-general";
-    
-    let checksHtml = "";
-    if (parsed.checks && parsed.checks.length > 0) {
-      checksHtml = `
-        <ul class="checks-list" style="margin-top:10px;">
-          ${parsed.checks.map((check, idx) => `
-            <li class="check-item">
-              <span class="check-num">${idx + 1}</span>
-              <span>${cleanCheckText(check)}</span>
-            </li>
-          `).join("")}
-        </ul>
-      `;
-    }
-
-    blockNotice.innerHTML = `
-      <div class="rec-label">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-        No matching past problem found
-      </div>
-      <p class="rec-text" style="font-weight:600;color:#e2e8f0;margin-bottom:6px;">
-        Here are general troubleshooting steps based on the current symptoms:
-      </p>
-      ${checksHtml || `<p class="rec-text">${formatGeneralText(rawText)}</p>`}
-      <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border-subtle);font-size:12px;color:var(--text-muted);">
-        <strong style="color:var(--azure-blue);">Tip:</strong> Click <em>"Load past solved incidents"</em> above to see how MemoryOps improves when it has team memory.
-      </div>
-    `;
-    container.appendChild(blockNotice);
-
-    // If verification step exists, show safety card
-    if (parsed.safetyNote) {
-      const blockSafety = document.createElement("div");
-      blockSafety.className = "rec-block rec-block-safety";
-      blockSafety.innerHTML = `
-        <div class="rec-label">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-          Verification Step Before Change
-        </div>
-        <p class="rec-text">${formatInlineCode(escapeHtml(parsed.safetyNote))}</p>
-      `;
-      container.appendChild(blockSafety);
-    }
-  }
-}
-
-function parseRecommendationText(raw) {
-  if (!raw) return { hasStructure: false };
-
-  const text = String(raw).trim();
-  const res = {
-    likelyPattern: "",
-    checks: [],
-    whyEvidence: "",
-    safetyNote: "",
-    hasStructure: false
-  };
-
-  // Check for Hindsight markdown headers or bullet structure
-  const patternMatch = text.match(/(?:###\s*1\)?\s*(?:Historical|Likely\s*Historical)\s*Pattern|Likely\s*pattern:?)([\s\S]*?)(?:###\s*2\)?|First\s*checks:?|$)/i);
-  if (patternMatch && patternMatch[1].trim()) {
-    res.likelyPattern = cleanMarkdown(patternMatch[1].trim());
-    res.hasStructure = true;
-  }
-
-  const checksMatch = text.match(/(?:###\s*2\)?\s*(?:Three\s*Concrete\s*)?First\s*Checks|First\s*checks:?)([\s\S]*?)(?:###\s*3\)?|Why:?|$)/i);
-  if (checksMatch && checksMatch[1].trim()) {
-    const rawChecks = checksMatch[1].trim();
-    const lines = rawChecks.split(/\r?\n/).filter(l => l.trim().length > 0);
-    for (const line of lines) {
-      const cleaned = line.replace(/^[\*\-\d\.\)]+\s*/, "").trim();
-      if (cleaned) res.checks.push(cleaned);
-    }
-    if (res.checks.length > 0) res.hasStructure = true;
-  }
-
-  const whyMatch = text.match(/(?:###\s*3\)?\s*Prior\s*Evidence|Why:?)([\s\S]*?)(?:###\s*4\)?|Verification\s*Step|$)/i);
-  if (whyMatch && whyMatch[1].trim()) {
-    res.whyEvidence = cleanMarkdown(whyMatch[1].trim());
-    res.hasStructure = true;
-  }
-
-  const safetyMatch = text.match(/(?:###\s*4\)?\s*(?:One\s*Verification\s*Step\s*Before\s*Change|Verification\s*Step|Safety:?))([\s\S]*?)$/i);
-  if (safetyMatch && safetyMatch[1].trim()) {
-    res.safetyNote = cleanMarkdown(safetyMatch[1].trim());
-  }
-
-  return res;
-}
-
-function cleanMarkdown(str) {
-  return str
-    .replace(/^#+\s+/gm, "")
-    .replace(/\*\*(.*?)\*\*/g, "$1")
-    .trim();
-}
-
-function formatInlineCode(str) {
-  return str
-    .replace(/\\?`([^`\\]+)\\?`/g, '<code class="inline-code">$1</code>')
-    .replace(/\\?"([^"]+)\\?"/g, '"$1"');
-}
-
-function cleanCheckText(str) {
-  let s = escapeHtml(str);
-  s = s.replace(/\*\*(.*?)\*\*/g, "<strong style='color:#f8fafc;'>$1</strong>");
-  s = formatInlineCode(s);
-  return s;
-}
-
-function formatGeneralText(str) {
-  const clean = cleanMarkdown(str);
-  return formatInlineCode(escapeHtml(clean));
-}
-
-// ============================================================
-// PAST EXPERIENCE / RECALLED MEMORIES RENDERER
-// ============================================================
-
-function renderMemories(memories) {
-  const list = $("memoriesList");
-  list.innerHTML = "";
-
-  if (!memories || memories.length === 0) {
-    list.innerHTML = `
-      <div class="panel-empty-state" id="memoriesEmpty">
-        <svg class="empty-icon" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/></svg>
-        <h3>No similar solved problem yet.</h3>
-        <p>When your team resolves incidents and saves what worked, MemoryOps can use that experience next time.</p>
-      </div>
-    `;
-    return;
-  }
-
-  // Consolidate memory items by incident ID (e.g. INC-1042) to build a unified postmortem card
-  const consolidated = consolidateIncidents(memories);
-  consolidated.forEach((inc) => {
-    const card = renderIncidentCard(inc);
-    list.appendChild(card);
   });
 }
+$("analyze").addEventListener("click", analyze);
+$("incident").addEventListener("keydown", (e) => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") analyze(); });
 
-function consolidateIncidents(items) {
-  const map = new Map();
+// ------------------------------------------------------------ Result rendering
 
-  for (const m of items) {
-    const text = m.text || "";
-    const context = m.context || "";
-    const combined = `${context}\n${text}`;
+const LEVEL_TEXT = {
+  HIGH: "Several confirmed team incidents agree with today's facts.",
+  MEDIUM: "Supported by confirmed team history, with some uncertainty.",
+  LOW: "Weak or unconfirmed team evidence.",
+  INSUFFICIENT: "No relevant team experience yet."
+};
 
-    const idMatch = combined.match(/INC-\d+/i);
-    const incidentId = idMatch ? idMatch[0].toUpperCase() : "INC-1042";
+// Provenance labels. Every piece of the answer says where it came from; sources are never blended.
+const SOURCE_LABEL = {
+  SESSION_EVIDENCE: "Session evidence", TEAM_MEMORY: "Team memory", TEAM_PATTERN: "Team pattern",
+  CURATED_KNOWLEDGE: "Curated knowledge", PUBLIC_DOCUMENTATION: "Public documentation", GENERAL_KNOWLEDGE: "General knowledge"
+};
+const srcTag = (type) => type ? `<span class="src src-${type.toLowerCase().replace(/_/g, "-")}">${SOURCE_LABEL[type] || esc(type)}</span>` : "";
 
-    if (!map.has(incidentId)) {
-      map.set(incidentId, {
-        id: incidentId,
-        service: "checkout-api",
-        severity: "SEV-2",
-        symptoms: null,
-        rootCause: null,
-        resolution: null,
-        lesson: null,
-        score: m.score ?? null,
-        rawItems: []
-      });
-    }
+const section = (key, title, body, extra = "", source = "") => `<section class="r-section r-${key}" ${extra}><h3 class="r-title">${esc(title)}${srcTag(source)}</h3>${body}</section>`;
+const list = (items) => `<ul class="r-list">${items.map((t) => `<li>${esc(t)}</li>`).join("")}</ul>`;
+const numbered = (items) => `<ol class="r-checks">${items.map((t, i) => `<li><span class="n">${i + 1}</span><span>${esc(t)}</span></li>`).join("")}</ol>`;
 
-    const rec = map.get(incidentId);
-    rec.rawItems.push(m);
+function confidenceHtml(ev) {
+  if (!ev) return "";
+  const c = ev.confidence;
+  return `<div class="conf conf-${c.level.toLowerCase()}">
+    <span class="conf-label">Memory confidence</span>
+    <span class="conf-chip">${c.level}</span>
+    <span class="conf-text">${esc(LEVEL_TEXT[c.level])}</span>
+  </div>`;
+}
 
-    // Extract metadata
-    const sevMatch = combined.match(/SEV-[1-3]/i);
-    if (sevMatch) rec.severity = sevMatch[0].toUpperCase();
+function modeHtml(mode) {
+  if (!mode) return "";
+  return `<div class="mode mode-${mode.mode.toLowerCase()}" role="note">
+    <span class="mode-k">${esc(mode.mode === "INSUFFICIENT" ? "Insufficient evidence" : mode.mode.replace("-", " "))}</span>
+    <div><strong>${esc(mode.title)}</strong><p>${esc(mode.text)}</p></div>
+  </div>`;
+}
 
-    const serviceMatch = combined.match(/(checkout-api|payments-worker|identity-api|checkout service|api)/i);
-    if (serviceMatch) rec.service = serviceMatch[0].toLowerCase();
+function conflictHtml(ev) {
+  if (!ev?.conflicts?.detected) return "";
+  const rows = ev.conflicts.causes.map((c) => `<li><span>${esc(c.cause)}</span><span class="muted">${c.incidents.length} previous incident${c.incidents.length > 1 ? "s" : ""} · ${c.incidents.map(esc).join(", ")}</span></li>`).join("");
+  return section("conflict", "Conflicting evidence", `<p class="r-text">Similar symptoms had different confirmed causes. Treat these as possibilities, not an answer.</p><ul class="conflict-list">${rows}</ul>`, "", "TEAM_MEMORY");
+}
 
-    // Parse sections
-    const sym = extractSection(text, /Symptoms:\s*([^\n]+)/i);
-    if (sym && !rec.symptoms) rec.symptoms = sym;
+function memoryCardHtml(m) {
+  const f = m.fields || {};
+  const failed = f.attempted ? `<div class="mc-row"><dt>Did not work</dt><dd class="bad">${esc(f.attempted)}</dd></div>` : "";
+  const partial = f.partial ? `<div class="mc-row"><dt>Helped only partly</dt><dd>${esc(f.partial)}</dd></div>` : "";
+  const cause = f.cause
+    ? `<div class="mc-row"><dt>Cause</dt><dd>${esc(f.cause)}</dd></div>`
+    : f.suspectedCause ? `<div class="mc-row"><dt>Suspected cause</dt><dd>${esc(f.suspectedCause)} <span class="muted">(not confirmed)</span></dd></div>` : "";
+  const body = m.fields
+    ? `<dl class="mc-rows">${cause}${f.worked ? `<div class="mc-row"><dt>Worked</dt><dd class="good">${esc(f.worked)}</dd></div>` : ""}${failed}${partial}</dl>`
+    : list(m.facts);
+  const meta = [f.area, m.verified ? (m.learned ? "Human-confirmed" : "Resolved") : null, Number.isFinite(m.score) ? `relevance ${m.score.toFixed(2)}` : null].filter(Boolean);
+  return `<article class="memory-card">
+    <div class="mc-eyebrow">${m.learned ? "Learned from a past incident resolved by this team" : "Recalled from team memory"}</div>
+    <div class="mc-head"><span class="mc-id">${esc(m.incidentId)}</span><span class="mc-meta">${meta.map(esc).join(" · ")}</span></div>
+    <p class="mc-title">${esc(f.title || f.happened || m.facts[0] || "")}</p>
+    ${body}
+    ${f.lesson ? `<p class="mc-lesson"><span>Lesson</span>${esc(f.lesson)}</p>` : ""}
+    ${f.promotedFrom ? `<p class="muted small">Originally suggested by ${esc(f.promotedFrom)}</p>` : ""}
+    ${m.feedback?.length ? `<p class="mc-feedback">Team feedback: ${m.feedback.map((x) => esc(x.verdict)).join(", ")}</p>` : ""}
+  </article>`;
+}
 
-    const rc = extractSection(text, /Root cause:\s*([^\n]+)/i);
-    if (rc && !rec.rootCause) rec.rootCause = rc;
+function fixHtml(fix, level) {
+  state.suggestedFix = fix || null;
+  if (!fix) return "";
+  const general = fix.kind === "general-example";
+  const lines = fix.diff.split("\n").map((l) => `<span class="dl ${l.startsWith("+") ? "add" : "del"}"><span class="sign">${esc(l[0])}</span>${esc(l.slice(2))}</span>`).join("");
+  const based = general
+    ? `<div><dt>Based on</dt><dd>Curated knowledge ${esc(fix.source.id)}</dd></div><div><dt>Status</dt><dd>Not verified for your system</dd></div>`
+    : `<div><dt>Based on</dt><dd>${esc(fix.source.incidentId)}${fix.source.learned ? " · learned" : ""}</dd></div><div><dt>Confidence</dt><dd>${esc(level)}</dd></div>`;
+  return `<section class="r-section r-fix${general ? " is-general" : ""}" id="fixBlock">
+    <h3 class="r-title">Suggested fix${srcTag(general ? "CURATED_KNOWLEDGE" : "TEAM_MEMORY")}</h3>
+    <div class="fix">
+      <div class="fix-bar"><span class="fix-kind">${esc(fix.label || (general ? "GENERAL EXAMPLE" : "VERIFIED TEAM FIX"))}</span><button class="copy" type="button" id="copyFix" aria-label="Copy suggested change">Copy</button></div>
+      <pre class="fix-code"><code>${lines}</code></pre>
+      <dl class="fix-meta">
+        ${based}
+        <div class="wide"><dt>Verify first</dt><dd>${esc(fix.verify || "Compare today's value with the last known-good configuration.")}</dd></div>
+      </dl>
+      <p class="fix-note">${esc(fix.note)} Review before applying; MemoryOps never runs anything.</p>
+      <p class="fix-setaside" hidden>Set aside: your observations do not support this cause.</p>
+    </div>
+  </section>`;
+}
 
-    const res = extractSection(text, /Resolution(?: that worked)?:\s*([^\n]+)/i);
-    if (res && !rec.resolution) rec.resolution = res;
+function hypothesisHtml(h) {
+  const origin = h.source === "CURATED_KNOWLEDGE"
+    ? `Documented in ${esc(h.knowledge_id)}${h.expected_if_true ? ` · expected if true: ${esc(h.expected_if_true)}` : ""}`
+    : `Past example: ${esc(h.example_cause || "")} · ${h.supporting_memories.map((m) => esc(m.id)).join(", ")}`;
+  return `<li class="hyp is-${h.status.replace(" ", "-")}">
+    <div class="hyp-head"><span>${esc(h.hypothesis)}</span>${srcTag(h.source || "TEAM_MEMORY")}<span class="tag">${h.confidence}</span><span class="tag tag-quiet">${esc(h.status)}</span></div>
+    <div class="muted">${origin}</div>
+    ${h.observations_for?.length ? `<div class="good">Supported by your observation: ${h.observations_for.map(esc).join("; ")}</div>` : ""}
+    ${h.evidence_against?.length ? `<div class="bad">Against: ${h.evidence_against.map(esc).join("; ")}</div>` : ""}
+  </li>`;
+}
 
-    const les = extractSection(text, /Operational lesson:\s*([^\n]+)/i);
-    if (les && !rec.lesson) rec.lesson = les;
+function diagnosisHtml() {
+  const hyps = state.hypotheses || [];
+  const next = state.nextBestCheck;
+  const hypList = hyps.length ? `<details class="disclosure"${hyps.some((h) => h.source === "CURATED_KNOWLEDGE") ? " open" : ""}><summary>Hypotheses to test (${hyps.length})</summary><ul class="hyps">${hyps.map(hypothesisHtml).join("")}</ul></details>` : "";
+  const body = next
+    ? `<p class="next">${esc(next.text)}</p><p class="muted small">From ${SOURCE_LABEL[next.source] ? SOURCE_LABEL[next.source].toLowerCase() : "analysis"}${next.expected_if_true ? ` · expected if true: ${esc(next.expected_if_true)}` : ""}</p>`
+    : `<p class="r-text">No hypothesis to test yet. Record what you check; it stays in this session.</p>`;
+  const obs = state.observations.length
+    ? `<ul class="obs-list">${state.observations.map((o) => `<li>${srcTag("SESSION_EVIDENCE")}<span>${esc(o)}</span></li>`).join("")}</ul>` : "";
+  return `${body}${hypList}${obs}
+    <div class="obs"><input id="observationInput" type="text" spellcheck="false" placeholder="What did you observe? e.g. ${esc(state.observationHint || "Current pool is 5; previous version was 30")}" aria-label="Your observation" />
+    <button class="btn btn-quiet btn-sm" type="button" id="addObservation">Record</button></div>
+    <p class="muted small">Observations are session facts. They are saved only if you confirm the outcome.</p>`;
+}
 
-    // Natural language heuristics from Hindsight observation/world memories
-    if (!rec.symptoms && text.includes("intermittent 502")) {
-      rec.symptoms = "Orders failed and intermittent 502 errors appeared after a deployment.";
-    }
-    if (!rec.rootCause && text.includes("connection pool")) {
-      rec.rootCause = "Database connection limit was reduced from 30 to 5 while traffic stayed constant.";
-    }
-    if (!rec.resolution && (text.includes("restoring the pool") || text.includes("Restored"))) {
-      rec.resolution = "Restored the limit from 5 to 30 and restarted the affected service.";
-    }
-    if (!rec.lesson && text.toLowerCase().includes("lesson")) {
-      rec.lesson = "When checkout errors and database timeouts appear after an update, check connection-limit changes first.";
-    }
+function citationsHtml(cites) {
+  if (!cites?.length) return "";
+  return `<p class="cites">References: ${cites.map((c) => `<a href="${esc(c.url)}" target="_blank" rel="noopener noreferrer">${esc(c.title)}</a> <span class="muted">(${esc(c.trust_level.toLowerCase())})</span>`).join(" · ")}</p>`;
+}
+
+function knowledgeHtml(k) {
+  if (!k || (!k.hits.length && !k.docs.length)) return "";
+  const [top, ...rest] = k.hits;
+  let body = "";
+  if (top) {
+    body += `<article class="kb-card">
+      <div class="kb-head"><span class="mono">${esc(top.id)}</span><span class="muted">${esc(top.technology)} · ${esc(top.category)}</span></div>
+      <p class="kb-title">${esc(top.title)}</p>
+      <p class="muted small">Matches documented symptoms: ${top.matched_terms.slice(0, 6).map(esc).join(", ")}</p>
+      <dl class="mc-rows">
+        <div class="mc-row"><dt>Rules it out</dt><dd>${esc(top.disconfirming_signals.slice(0, 2).join("; "))}</dd></div>
+        <div class="mc-row"><dt>Safe direction</dt><dd>${esc(top.safe_remediation_guidance.slice(0, 2).join("; "))}</dd></div>
+        ${top.warnings.length ? `<div class="mc-row"><dt>Warning</dt><dd class="bad">${esc(top.warnings[0])}</dd></div>` : ""}
+      </dl>
+      ${citationsHtml(top.citations)}
+    </article>`;
+  }
+  if (rest.length) body += `<details class="disclosure"><summary>Other documented possibilities (${rest.length})</summary><ul class="r-list">${rest.map((h) => `<li><span class="mono">${esc(h.id)}</span> ${esc(h.title)}</li>`).join("")}</ul></details>`;
+  for (const d of k.docs) {
+    body += `<blockquote class="doc-quote">${srcTag("PUBLIC_DOCUMENTATION")}<p>${esc(d.excerpt)}${d.excerpt.length >= 420 ? "…" : ""}</p>
+      <footer><a href="${esc(d.source_url)}" target="_blank" rel="noopener noreferrer">${esc(d.topic || d.title)}</a> · ${esc(d.publisher)} · ${esc(d.license)} · retrieved ${esc((d.retrieved_at || "").slice(0, 10))}${d.live ? " · live" : ""}</footer></blockquote>`;
+  }
+  return section("knowledge", "Documented knowledge", `<p class="muted small">Not your team's experience. Use it to decide what to check; confirm on your own system.</p>${body}`, "", top ? "CURATED_KNOWLEDGE" : "PUBLIC_DOCUMENTATION");
+}
+
+function teamHtml(team) {
+  if (!team) return "";
+  let html = "";
+  for (const p of team.patterns || []) {
+    html += `<section class="r-section r-insight"><div class="insight">
+      <div class="insight-k">Team has learned ${srcTag("TEAM_PATTERN")}</div>
+      <p class="insight-text">${esc(p.statement)}</p>
+      <p class="muted">Based on ${p.supporting_incidents.length} confirmed incidents${p.counterexamples.length ? ` · Exception${p.counterexamples.length > 1 ? "s" : ""}: ${p.counterexamples.map((c) => `${esc(c.id)} (${esc(c.cause.toLowerCase())})`).join(", ")}` : ""}</p>
+    </div></section>`;
+  }
+  const b = team.playbook;
+  if (b) {
+    html += `<details class="disclosure r-section"><summary>Team playbook: ${esc(b.title)} <span class="muted">· learned from ${b.learned_from} confirmed incidents</span></summary>
+      <ol class="playbook">${b.steps.map((st) => `<li><span>${esc(st.step)}</span><span class="muted">${esc(st.why)} (${st.supporting_incidents.map(esc).join(", ")})</span></li>`).join("")}</ol>
+      ${b.cautions.map((c) => `<p class="bad small">${esc(c.text)}</p>`).join("")}
+    </details>`;
+  }
+  return html;
+}
+
+function advancedHtml(data, matched) {
+  const others = data.matches.filter((m) => m !== matched);
+  const ev = data.evidence;
+  const parts = [];
+  if (others.length) parts.push(`<h4>Also recalled by Hindsight</h4><ul class="r-list">${others.map((m) => `<li><span class="mono">${esc(m.incidentId)}</span> ${esc(m.fields?.title || m.facts[0] || "")}</li>`).join("")}</ul>`);
+  if (ev?.confidence?.reasons?.length) parts.push(`<h4>How memory confidence was decided</h4>${list(ev.confidence.reasons)}`);
+  if (ev?.confidence?.statement) parts.push(`<p class="muted">${esc(ev.confidence.statement)}</p>`);
+  if (data.recommendation?.suppressed?.length) parts.push(`<h4>Removed suggestions</h4>${list(data.recommendation.suppressed.map((s) => `${s.check}: ${s.because}`))}`);
+  if (matched) parts.push(`<h4>What Hindsight returned for ${esc(matched.incidentId)}</h4>${list(matched.facts)}<p class="mono muted small">document_id: ${esc(matched.documentId || "")}</p>`);
+  if (data.knowledge?.hits?.length) parts.push(`<h4>Knowledge retrieval</h4>${list(data.knowledge.hits.map((h) => `${h.id} · score ${h.score} · matched ${h.matched_terms.join(", ")}`))}`);
+  return parts.length ? `<details class="disclosure r-section"><summary>Advanced details</summary><div class="advanced">${parts.join("")}</div></details>` : "";
+}
+
+// Hierarchy: confidence → mode → primary assessment → next best check → fix → team experience →
+// documented knowledge → why → conflicts → previously failed → pattern/playbook → verify.
+function renderResults(data, matched) {
+  const rec = data.recommendation;
+  const ev = data.evidence;
+  const k = data.knowledge || { hits: [], docs: [] };
+  state.nextBestCheck = ev?.nextBestCheck || null;
+  state.suggestedFix = null;
+  const level = ev?.confidence?.level || "INSUFFICIENT";
+  let html = confidenceHtml(ev) + modeHtml(data.mode);
+
+  // Primary assessment
+  if (!rec) {
+    html += section("thinks", "Primary assessment", `<p class="r-text">${esc(data.reflectError?.message || "The recommendation step failed.")} The recalled memory below is still real; try again.</p>`);
+  } else if (matched) {
+    const thinks = rec.structured
+      ? `${rec.pattern ? `<p class="lead">${esc(rec.pattern)}</p>` : ""}${rec.checks?.length ? `<h4>What to check first</h4>${numbered(rec.checks)}` : ""}`
+      : `<p class="r-text pre">${esc(rec.text)}</p>`;
+    html += section("thinks", "Primary assessment", thinks, "", "TEAM_MEMORY");
+  } else if (k.hits.length) {
+    const hyps = (ev?.hypotheses || []).filter((h) => h.source === "CURATED_KNOWLEDGE");
+    html += section("thinks", "Primary assessment", `<p class="lead">This looks like <strong>${esc(k.hits[0].title.toLowerCase())}</strong>. Possibilities to investigate:</p>
+      ${numbered(hyps.map((h) => h.hypothesis))}
+      <p class="muted small">${data.matches.length ? "Hindsight searched team memory, but nothing recalled resembles this closely enough to rely on." : "Your team has not recorded a similar incident yet."} Once a person confirms the cause and fix, MemoryOps learns it as team experience.</p>`, "", "CURATED_KNOWLEDGE");
+  } else {
+    html += section("thinks", "Primary assessment", `<p class="r-text">${data.matches.length ? "Team memory was searched, but nothing recalled resembles this problem closely enough." : "Your team has not solved a related problem yet,"} and no documented knowledge matches closely. Start with the next best check below.</p>`);
   }
 
-  return Array.from(map.values());
-}
-
-function renderIncidentCard(inc) {
-  const card = document.createElement("div");
-  card.className = "memory-card";
-
-  let scoreBadgeHtml = "";
-  if (inc.score !== null && inc.score !== undefined && !Number.isNaN(Number(inc.score))) {
-    const num = Number(inc.score);
-    const scoreFormatted = num <= 1 ? (num * 100).toFixed(0) + "% match" : num.toFixed(2);
-    scoreBadgeHtml = `<span class="similarity-score" title="Hindsight recall score">${scoreFormatted}</span>`;
+  if (ev) html += section("next", "Next best check", `<div id="diagnosisBox">${diagnosisHtml()}</div>`);
+  html += fixHtml(data.suggestedFix, level);
+  if (matched) html += section("before", "Team experience", memoryCardHtml(matched), "", "TEAM_MEMORY");
+  else if (!rec && data.matches[0]) html += section("before", "Team experience", memoryCardHtml(data.matches[0]), "", "TEAM_MEMORY");
+  html += knowledgeHtml(k);
+  if (matched && ev?.why?.reasons?.length) {
+    html += section("why", "Why", `${list(ev.why.reasons)}<p class="muted">Supporting: ${ev.why.supporting.map((id) => `<span class="mono">${esc(id)}</span>`).join(", ")}</p>`, "", "TEAM_MEMORY");
   }
-
-  const symptoms = inc.symptoms || "Orders failed after an update.";
-  const rootCause = inc.rootCause || "Database connection limit was reduced from 30 → 5.";
-  const resolution = inc.resolution || "Restore the limit and restart the affected service.";
-  const lesson = inc.lesson || "When checkout errors and database timeouts appear after an update, check connection-limit changes first.";
-
-  card.innerHTML = `
-    <div class="memory-header">
-      <div class="incident-badge-row">
-        <span class="incident-id">${inc.id}</span>
-        <span class="service-pill">${escapeHtml(inc.service)}</span>
-        <span class="severity-pill">${inc.severity}</span>
-      </div>
-      ${scoreBadgeHtml}
-    </div>
-
-    <div class="incident-fields">
-      <div class="incident-field">
-        <span class="field-label">WHAT HAPPENED</span>
-        <p class="field-value">${formatInlineCode(escapeHtml(symptoms))}</p>
-      </div>
-
-      <div class="incident-field">
-        <span class="field-label">ROOT CAUSE</span>
-        <p class="field-value highlight-cause">${formatInlineCode(escapeHtml(rootCause))}</p>
-      </div>
-
-      <div class="incident-field">
-        <span class="field-label">WHAT WORKED</span>
-        <p class="field-value highlight-fix">${formatInlineCode(escapeHtml(resolution))}</p>
-      </div>
-
-      <div class="incident-field">
-        <span class="field-label">LESSON LEARNED</span>
-        <p class="field-value">${formatInlineCode(escapeHtml(lesson))}</p>
-      </div>
-    </div>
-  `;
-
-  return card;
+  html += conflictHtml(ev);
+  if (ev?.failedBefore?.length) html += section("failed", "Previously failed", list(ev.failedBefore.map((f) => f.text)), "", "TEAM_MEMORY");
+  else if (k.hits[0]?.common_failed_actions?.length) html += section("failed", "Commonly tried without success", list(k.hits[0].common_failed_actions.slice(0, 3)), "", "CURATED_KNOWLEDGE");
+  html += teamHtml(data.team);
+  if (rec?.checks?.length && !matched) {
+    html += `<details class="disclosure r-section"><summary>General first steps ${srcTag("GENERAL_KNOWLEDGE")}</summary>${numbered(rec.checks)}</details>`;
+  }
+  html += `<p class="verify"><span>Verify before applying</span>${esc(VERIFY_FIRST)}${rec?.safety ? ` ${esc(rec.safety)}` : ""}</p>`;
+  html += advancedHtml(data, matched);
+  if (matched) {
+    html += `<div class="feedback" id="feedbackRow"><span>Was this past incident useful?</span>
+      <button class="chip" type="button" data-helpful="true">Helpful</button>
+      <button class="chip" type="button" data-helpful="false">Not relevant</button></div>`;
+  }
+  const container = $("recommendationContent");
+  container.innerHTML = html;
+  show($("results"));
+  updatePromotion();
 }
 
-function extractSection(str, regex) {
-  const match = str.match(regex);
-  return match && match[1] ? match[1].trim() : null;
+// Knowledge promotion: if the person's observations support a documented hypothesis, saving a confirmed
+// outcome records where the idea came from. The AI hypothesis itself is never stored.
+function promotedHypothesis() {
+  return (state.hypotheses || []).find((h) => h.source === "CURATED_KNOWLEDGE" && h.status === "supported") || null;
+}
+function updatePromotion() {
+  const h = promotedHypothesis();
+  const el = $("promotionNote");
+  el.hidden = !h;
+  if (h) el.innerHTML = `${srcTag("CURATED_KNOWLEDGE")} Your observations support “${esc(h.hypothesis)}” from ${esc(h.knowledge_id)}. If you confirm it below, it is saved as <strong>your team's verified experience</strong>, noting it was originally suggested by documented knowledge.`;
 }
 
-// ============================================================
-// SAVE WHAT WORKED (LEARNING LOOP)
-// ============================================================
+function renderObservations() {
+  const box = $("sessionObservations");
+  box.innerHTML = state.observations.length
+    ? `<span class="field-label-ui">Observations this session <span class="muted">(saved only if you confirm)</span></span><ul class="r-list">${state.observations.map((o) => `<li>${esc(o)}</li>`).join("")}</ul>`
+    : "";
+}
 
-$("resolve").addEventListener("click", async () => {
-  if (state.isResolving) return;
+function updateFixForHypotheses() {
+  const blockEl = document.getElementById("fixBlock");
+  const fix = state.suggestedFix;
+  if (!blockEl || !fix?.hypothesisId) return;
+  const h = state.hypotheses.find((x) => x.id === fix.hypothesisId);
+  const setAside = Boolean(h && (h.status === "weakened" || h.status === "ruled out"));
+  blockEl.classList.toggle("is-set-aside", setAside);
+  blockEl.querySelector(".fix-setaside").hidden = !setAside;
+}
 
-  const incident = $("incident").value.trim();
-  const resolution = $("resolution").value.trim();
-  const errorEl = $("resolutionError");
+async function addObservation() {
+  const input = $("observationInput");
+  const text = input.value.trim();
+  if (!text) { input.focus(); return; }
+  state.observations.push(text);
+  renderObservations();
+  if (state.hypotheses.length) {
+    try {
+      const r = await apiRequest("/api/diagnose", { method: "POST", body: JSON.stringify({ hypotheses: state.hypotheses, observations: state.observations }) });
+      state.hypotheses = r.hypotheses;
+      state.nextBestCheck = r.nextBestCheck;
+      logLearning(`Observation recorded → leading hypothesis: <strong>${esc(r.hypotheses[0].hypothesis)}</strong> (${esc(r.hypotheses[0].status)})`);
+    } catch (err) {
+      showToast("Could not update hypotheses.", "error");
+      showBannerError(err);
+    }
+  } else {
+    logLearning("Observation recorded (session only)");
+  }
+  $("diagnosisBox").innerHTML = diagnosisHtml();
+  updateFixForHypotheses();
+  updatePromotion();
+}
 
-  if (!resolution) {
-    errorEl.textContent = "Enter how the problem was resolved before saving.";
-    errorEl.style.display = "block";
-    $("resolution").focus();
+$("recommendationContent").addEventListener("keydown", (e) => { if (e.key === "Enter" && e.target.id === "observationInput") addObservation(); });
+$("recommendationContent").addEventListener("click", async (e) => {
+  if (e.target.closest("#addObservation")) return addObservation();
+
+  const copy = e.target.closest("#copyFix");
+  if (copy && state.suggestedFix) {
+    try { await navigator.clipboard.writeText(state.suggestedFix.diff); copy.textContent = "Copied ✓"; copy.classList.add("done"); }
+    catch { copy.textContent = "Select & copy"; }
+    setTimeout(() => { copy.textContent = "Copy"; copy.classList.remove("done"); }, 1800);
     return;
   }
-  errorEl.style.display = "none";
-  hideBannerError();
 
-  state.isResolving = true;
-  const saveBtn = $("resolve");
-  const origBtnHtml = saveBtn.innerHTML;
-  saveBtn.disabled = true;
-  saveBtn.innerHTML = `
-    <span class="spinner" style="width:14px;height:14px;border-width:2px;margin:0;display:inline-block;"></span>
-    <span>Saving solution to Hindsight…</span>
-  `;
-
+  const btn = e.target.closest("[data-helpful]");
+  if (!btn || !state.lastAnalysis?.matchedId) return;
+  const row = $("feedbackRow");
+  const helpful = btn.dataset.helpful === "true";
+  row.querySelectorAll("button").forEach((b) => (b.disabled = true));
   try {
-    await apiRequest("/api/resolve", {
-      method: "POST",
-      body: JSON.stringify({ incident, resolution })
-    });
-
-    // Advance stepper: all steps completed
-    setStep(4);
-    const step4 = $("step4");
-    step4.classList.add("completed");
-    step4.querySelector(".step-num").innerHTML = "&#10003;";
-    $("pipelineSave").classList.add("highlighted");
-
-    // Show strong success confirmation
-    const successBox = $("saveSuccessBox");
-    $("savedResolutionPreview").textContent = `Retained: "${resolution}"`;
-    successBox.style.display = "flex";
-
-    showToast("Solution saved to Hindsight memory.", "success");
-    await refreshStatus();
+    await apiRequest("/api/feedback", { method: "POST", body: JSON.stringify({ incidentId: state.lastAnalysis.matchedId, helpful, incident: state.lastAnalysis.incident }) });
+    row.innerHTML = `<span>Thanks. Saved as a relevance hint for ${esc(state.lastAnalysis.matchedId)}, not as a confirmed fact.</span>`;
+    logLearning(`Feedback: ${esc(state.lastAnalysis.matchedId)} marked <strong>${helpful ? "helpful" : "not relevant"}</strong>`);
   } catch (err) {
-    showToast("Failed to save resolution.", "error");
-    showBannerError("Memory service is temporarily unavailable.", err.message);
-  } finally {
-    state.isResolving = false;
-    saveBtn.disabled = false;
-    saveBtn.innerHTML = origBtnHtml;
+    row.querySelectorAll("button").forEach((b) => (b.disabled = false));
+    showToast("Could not save feedback.", "error");
+    showBannerError(err);
   }
 });
 
-// ============================================================
-// DEMO EXAMPLE & RESET ACTIONS
-// ============================================================
+// ------------------------------------------------------------ Save verified experience
 
-$("useDemoExample").addEventListener("click", () => {
-  $("incident").value = DEFAULT_INCIDENT;
-  $("incidentError").style.display = "none";
-  showToast("Demo incident loaded into description.", "success");
+$("resolve").addEventListener("click", () => {
+  const incident = $("incident").value.trim();
+  const worked = $("resolution").value.trim();
+  const errorEl = $("resolutionError");
+  const missing = !worked ? ["resolution", "Enter what actually fixed the problem."]
+    : !incident ? ["incident", "Describe the problem first."]
+    : !$("humanConfirmed").checked ? ["humanConfirmed", "Confirm this is what actually happened. Only confirmed outcomes become memory."]
+    : null;
+  if (missing) {
+    errorEl.textContent = missing[1];
+    show(errorEl);
+    $(missing[0]).focus();
+    return;
+  }
+  show(errorEl, false);
+  const promoted = promotedHypothesis();
+  const payload = { incident, worked, confirmed: true, causeConfirmed: $("causeConfirmed").checked, observations: state.observations, ...(promoted ? { promotedFrom: promoted.knowledge_id } : {}) };
+  for (const f of SAVE_FIELDS) payload[f] = $(f).value.trim();
+
+  return withBusy("resolve", $("resolve"), "Saving to Hindsight…", async () => {
+    hideBannerError();
+    try {
+      const res = await apiRequest("/api/resolve", { method: "POST", body: JSON.stringify(payload) });
+      setStep(4, true);
+      setPipeline({ learnProblem: "active", learnRecalled: "active", learnVerify: "highlighted", learnSaved: "highlighted" });
+      const causeNote = { confirmed: "cause confirmed", suspected: "cause marked as suspected", unknown: "cause not recorded" }[res.causeStatus] || "";
+      $("savedResolutionPreview").textContent = `Stored as ${res.id} · ${causeNote}`;
+      const box = $("saveSuccessBox");
+      box.hidden = true; void box.offsetWidth; box.hidden = false; // replay the check animation
+      $("humanConfirmed").checked = false;
+      showToast("Experience learned.");
+      await refreshStatus();
+      setDemoState("saved", { id: res.id });
+      if (res.promotedFrom) logLearning(`Documented hypothesis ${esc(res.promotedFrom)} <strong>confirmed by a person</strong> and saved as team experience`);
+      logLearning(`Saved verified experience <strong>${esc(res.id)}</strong>${Number.isFinite(state.documents) ? ` · ${countLabel(state.documents)} stored` : ""}`);
+      state.observations = [];
+      renderObservations();
+      $("promotionNote").hidden = true;
+      for (const ch of res.consolidation?.changes || []) {
+        if (ch.type === "TEAM_PATTERN" && ch.status !== "unchanged") {
+          const p = res.consolidation.patterns.find((x) => x.id === ch.id);
+          logLearning(`<strong>Team has learned</strong> (${ch.status}): ${esc(p?.statement || ch.id)}`);
+          showToast(`Team pattern ${ch.status} from ${p?.supporting ?? "3+"} confirmed incidents.`);
+        }
+        if (ch.type === "PLAYBOOK" && ch.status !== "unchanged") logLearning(`<strong>Team playbook</strong> ${ch.status}`);
+      }
+    } catch (err) {
+      showToast("Could not save the experience.", "error");
+      showBannerError(err);
+    }
+  });
 });
+
+// ------------------------------------------------------------ Presets & reset
+
+function applyPreset(key) {
+  const p = PRESETS[key];
+  $("incident").value = p.problem;
+  $("resolution").value = p.worked;
+  for (const f of SAVE_FIELDS) $(f).value = p[f];
+  $("causeConfirmed").checked = p.causeConfirmed;
+  $("humanConfirmed").checked = false;
+  state.observationHint = p.observation || "";
+  show($("incidentError"), false);
+  show($("resolutionError"), false);
+  document.querySelectorAll("[data-preset]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.preset === key)));
+}
+
+document.querySelectorAll("[data-preset]").forEach((b) => b.addEventListener("click", () => {
+  applyPreset(b.dataset.preset);
+  show($("saveSuccessBox"), false);
+  $("incident").focus();
+}));
 
 $("resetDemo").addEventListener("click", () => {
-  $("incident").value = DEFAULT_INCIDENT;
-  $("resolution").value = DEFAULT_RESOLUTION;
-  $("incidentError").style.display = "none";
-  $("resolutionError").style.display = "none";
-  $("saveSuccessBox").style.display = "none";
+  applyPreset("round1");
+  for (const id of ["saveSuccessBox", "results", "analysisLoading", "learnSection"]) show($(id), false);
+  show($("analysisEmpty"));
   hideBannerError();
-
-  // Reset results
-  $("recommendationContent").style.display = "none";
-  $("analysisLoading").style.display = "none";
-  $("analysisEmpty").style.display = "flex";
-  $("recommendationContextBadge").textContent = "Awaiting analysis";
-  $("recommendationContextBadge").className = "badge badge-subtle";
-
-  $("recallBadge").textContent = "0 recalled";
-  $("recallBadge").className = "badge badge-subtle";
-  $("memoriesList").innerHTML = `
-    <div class="panel-empty-state" id="memoriesEmpty">
-      <svg class="empty-icon" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/></svg>
-      <h3>No similar solved problem yet.</h3>
-      <p>When your team resolves incidents and saves what worked, MemoryOps can use that experience next time.</p>
-    </div>
-  `;
-
-  // Reset pipeline & stepper
+  $("learningLog").innerHTML = '<li class="log-empty">Screen cleared. Memories stored in Hindsight are kept.</li>';
+  setStat("statRelevant", null);
+  Object.assign(state, { analyses: 0, lastAnalysis: null, hypotheses: [], observations: [], suggestedFix: null });
+  renderObservations();
   setStep(1);
-  $("pipelineSearch").classList.remove("active", "highlighted");
-  $("pipelineRecalled").classList.remove("active", "highlighted");
-  $("pipelineBetter").classList.remove("active", "highlighted");
-  $("pipelineSave").classList.remove("active", "highlighted");
-
-  state.recalledCount = 0;
-  if (state.hasSeededInSession) {
-    updateMemoryState("loaded", 3);
-  } else {
-    updateMemoryState("empty");
-  }
-
-  showToast("Demo reset to initial state.", "success");
+  setPipeline({});
+  setDemoState("ready");
+  showToast("Screen cleared. Hindsight memories are kept.");
   refreshStatus();
 });
 
-// Helper for HTML escaping
-function escapeHtml(value) {
-  return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
+function esc(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;").replaceAll("'", "&#039;");
 }
 
-// Initial status load
-refreshStatus();
+applyPreset("round1");
+
+// ------------------------------------------------------------ First-open intro (once per page load)
+// At least MIN_MS so it feels intentional, at most MAX_MS so it never holds the app back.
+
+function runIntro(ready) {
+  const intro = $("intro");
+  const shell = $("appShell");
+  if (!intro) return;
+  const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+  const MIN_MS = reduce ? 500 : 1500;
+  const MAX_MS = 2200;
+  const started = performance.now();
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  shell.inert = true;
+  Promise.race([ready.catch(() => {}), wait(MAX_MS)])
+    .then(() => wait(Math.max(0, MIN_MS - (performance.now() - started))))
+    .then(() => {
+      shell.inert = false;
+      intro.classList.add("is-leaving");
+      document.body.classList.remove("intro-active");
+      setTimeout(() => intro.remove(), reduce ? 300 : 700);
+    });
+}
+
+runIntro(refreshStatus());
