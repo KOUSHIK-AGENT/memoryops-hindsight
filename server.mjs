@@ -7,6 +7,7 @@ import { parseFields, parseFeedback } from "./lib/memory-text.mjs";
 import { normalizeQuery, normalizedContext } from "./lib/signals.mjs";
 import { analyzeEvidence, applyObservations, suppressFailedChecks } from "./lib/reasoning.mjs";
 import { consolidate, patternToRetainItem, playbookToRetainItem, readPayload } from "./lib/patterns.mjs";
+import { suggestFix } from "./lib/fixes.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -370,7 +371,14 @@ export async function analyzeIncident(incident) {
     recommendation.checks = checks;
     recommendation.suppressed = suppressed;
   }
-  return { ok: true, state: recommendation.memoryUsed ? "recommendation_ready" : "no_experience", matches, evidence, team, recommendation };
+  // Suggested fix: only from the confirmed incident the recommendation is actually based on.
+  let suggestedFix = null;
+  if (recommendation.memoryUsed) {
+    const match = matches.find((m) => m.incidentId === recommendation.matchedIncidentId);
+    const hypothesis = evidence.hypotheses.find((h) => h.supporting_memories.some((s) => s.id === match?.incidentId)) || null;
+    suggestedFix = suggestFix({ match, confidence: evidence.confidence.level, hypothesis });
+  }
+  return { ok: true, state: recommendation.memoryUsed ? "recommendation_ready" : "no_experience", matches, evidence, team, recommendation, suggestedFix };
 }
 
 // Team patterns / playbook for today's situation (area + timing), read back from Hindsight.

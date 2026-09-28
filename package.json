@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node server.mjs",
     "dev": "node server.mjs",
-    "test": "node --test test/server.test.mjs test/dataset.test.mjs test/ingestion.test.mjs test/intelligence.test.mjs",
+    "test": "node --test test/server.test.mjs test/dataset.test.mjs test/ingestion.test.mjs test/intelligence.test.mjs test/fixes.test.mjs",
     "smoke": "node scripts/smoke.mjs",
     "memory:seed": "node scripts/seed-memory-dataset.mjs",
     "memory:evaluate": "node scripts/evaluate-memory.mjs",

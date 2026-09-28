@@ -68,7 +68,7 @@ On Windows PowerShell, run `Copy-Item .env.example .env` and then `notepad .env`
 ## Test it
 
 ```bash
-npm test          # 44 tests (server, dataset, ingestion, reasoning) against fake Hindsight; never touches your account
+npm test          # 48 tests (server, dataset, ingestion, reasoning, fixes) against fake Hindsight; never touches your account
 npm run smoke     # the 7 learning-loop acceptance checks against your REAL bank (server must be running)
                   # (same as npm run memory:smoke)
 ```
@@ -142,6 +142,7 @@ MemoryOps does more than find a similar incident. Everything below is **determin
 - **Multiple memories and conflicts:** up to 3 hypotheses, grouped by confirmed cause. If equally good matches had different causes, the UI shows *Conflicting history* instead of picking one.
 - **Next best check:** each hypothesis carries its supporting memories, a next check (taken from the remembered lesson), and what you'd expect to see if it's true. You type what you observed (*"Current pool is 5. Previous version was 30."*) and the hypotheses update (`/api/diagnose`). Observations are **session evidence only**; they are saved only as part of a confirmed outcome.
 - **Negative experience:** failed attempts are listed as *Previously tried, did NOT work*, and a guard removes any suggested check that just repeats a known failed action.
+- **Suggested fix:** a config diff (for example `- CONNECTION_POOL_SIZE=5` / `+ CONNECTION_POOL_SIZE=30`) with a Copy button. It appears **only** when the recommendation is based on a recalled, human-confirmed incident whose own text states the setting and both values, and confidence is MEDIUM or HIGH (`lib/fixes.mjs`). The key name mirrors that incident's wording and is labelled as such. If your observations weaken that cause, the fix is set aside, and MemoryOps never applies it.
 - **Why this recommendation?** Only facts that were actually shared or counted appear here, with the supporting incident IDs.
 - **Team patterns (level-2 learning):** after each confirmed save, MemoryOps reads the confirmed incidents and creates or updates a `TEAM_PATTERN`. This needs **at least 3 independently confirmed incidents** with the same cause in the same situation (area plus timing); suspected causes don't count. Counterexamples are kept in the statement, for example *"…has been a recurring cause…, but similar symptoms have also come from certificate problems"*. Each pattern has a stable ID, so it is updated rather than duplicated, and incidents are never deleted.
 - **Team playbook:** generated once a pattern exists. There is one step per confirmed cause in that situation, and each step shows *why this check exists* and which incidents support it. It is guidance only; a person runs every step.

@@ -452,3 +452,19 @@ test("consolidation: pattern + playbook appear at 3 confirmed incidents, update 
   assert.equal(a.json.team.playbook.learned_from, 4);
   for (const r of [r1, r3, r4, again, a]) assert.ok(!r.text.includes(FAKE_KEY));
 });
+
+test("analysis includes a suggested fix only when based on a recalled confirmed incident", async () => {
+  const confirmedChunk = CHECKOUT_CHUNK.replace("Title:", "Status: Confirmed resolved incident\nTitle:");
+  const confirmedRecall = { ...recallWithCheckout, chunks: { ...recallWithCheckout.chunks, c1: { id: "c1", text: confirmedChunk, chunk_index: 0 } } };
+  handler = (req) => req.url.endsWith("/memories/recall")
+    ? { json: confirmedRecall }
+    : { json: { text: "", structured_output: { similar_problem_found: true, matched_incident_id: "INC-1042", likely_pattern: "p", first_checks: ["Compare connection settings"], why: "w", safety_note: "s", avoid: "", conflict_note: "", team_learned: "" } } };
+  const withFix = await post("/api/analyze", { incident: "Orders fail right after today's release and database connections are exhausted." });
+  assert.equal(withFix.json.suggestedFix.diff, "- DATABASE_CONNECTION_LIMIT=5\n+ DATABASE_CONNECTION_LIMIT=30");
+  assert.equal(withFix.json.suggestedFix.source.incidentId, "INC-1042");
+  handler = (req) => req.url.endsWith("/memories/recall")
+    ? { json: confirmedRecall }
+    : { json: { text: "", structured_output: { similar_problem_found: false, matched_incident_id: "", likely_pattern: "", first_checks: ["a"], why: "", safety_note: "", avoid: "", conflict_note: "", team_learned: "" } } };
+  const without = await post("/api/analyze", { incident: "Orders fail right after today's release and database connections are exhausted." });
+  assert.equal(without.json.suggestedFix ?? null, null);
+});
