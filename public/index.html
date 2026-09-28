@@ -3,15 +3,16 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>MemoryOps — AI That Remembers How Your Team Solved Problems Before</title>
-  <meta name="description" content="When a technical problem happens again, MemoryOps recalls similar past problems, what caused them, and what worked. Powered by Hindsight long-term memory." />
+  <title>MemoryOps: incident memory copilot</title>
+  <meta name="description" content="MemoryOps remembers how your team solved problems before: it recalls similar resolved incidents, what worked and what didn't, and suggests what to check first. Powered by Hindsight memory." />
+  <meta name="theme-color" content="#0b0c0e" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&family=Newsreader:ital,opsz,wght@1,6..72,400&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body class="intro-active">
-  <!-- First-open intro. Decorative: removed after load; CSS failsafe hides it if JS never runs. -->
+  <!-- First-open intro. Decorative: removed after load; a CSS failsafe hides it if JavaScript never runs. -->
   <div id="intro" class="intro" aria-hidden="true">
     <div class="intro-inner">
       <svg class="intro-motif" width="148" height="80" viewBox="0 0 148 80" fill="none">
@@ -30,294 +31,168 @@
     </div>
   </div>
 
-  <div class="app-shell" id="appShell">
-    <!-- Top Header -->
-    <header class="top-header" role="banner">
-      <div class="brand-block">
-        <div class="brand-eyebrow">
-          <span class="brand-badge">MEMORYOPS</span>
-          <span class="powered-by">Powered by Hindsight long-term memory</span>
-        </div>
-        <h1 class="product-title">MemoryOps</h1>
-        <p class="product-headline">AI that remembers how your team solved problems before.</p>
-        <p class="product-subtext">Every time the team solves a problem, MemoryOps remembers what actually worked. When something similar happens later, it starts with that experience instead of starting from zero.</p>
+  <div class="app" id="appShell">
+    <header class="topbar">
+      <div class="tb-left">
+        <svg class="logo-mark" width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path d="M3 11 L8 4 L15 7 L10 14 Z" fill="none" stroke="currentColor" stroke-width="1.2" opacity=".45"/><circle cx="3" cy="11" r="1.6" fill="currentColor"/><circle cx="8" cy="4" r="1.6" fill="currentColor"/><circle cx="15" cy="7" r="1.6" fill="currentColor"/><circle cx="10" cy="14" r="2" class="logo-recall"/></svg>
+        <span class="tb-name">MemoryOps</span>
+        <span class="tb-context">Incident memory copilot</span>
       </div>
-
-      <div class="header-actions">
-        <div class="connection-card" id="connectionCard" aria-live="polite">
-          <div class="connection-status-row">
-            <span id="dot" class="status-dot"></span>
-            <div>
-              <div class="connection-title" id="mode">Connecting…</div>
-              <div class="connection-meta" id="bank">Checking memory bank…</div>
-            </div>
-          </div>
+      <div class="tb-right">
+        <div class="tb-status" id="connectionCard" aria-live="polite" title="Hindsight memory connection">
+          <span id="dot" class="status-dot"></span>
+          <span id="mode">Connecting…</span>
+          <span class="tb-meta" id="bank"></span>
         </div>
-        <button id="resetDemo" class="btn-ghost-sm" title="Clears this screen only. Memories already stored in Hindsight are kept." type="button">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
-          Reset screen
-        </button>
+        <span class="tb-count" id="memoryBadge">Checking memory…</span>
+        <button id="resetDemo" class="btn btn-quiet btn-sm" type="button" title="Clears this screen only. Memories stored in Hindsight are kept.">Reset</button>
       </div>
     </header>
 
-    <!-- Demo Stepper Progress Indicator -->
-    <nav class="demo-progress" aria-label="Incident response demo progress">
-      <div class="progress-step active" id="step1" data-step="1">
-        <span class="step-num">1</span>
-        <span class="step-label">Today's problem</span>
-      </div>
-      <div class="step-divider" aria-hidden="true"></div>
-      <div class="progress-step" id="step2" data-step="2">
-        <span class="step-num">2</span>
-        <span class="step-label">Search team memory</span>
-      </div>
-      <div class="step-divider" aria-hidden="true"></div>
-      <div class="progress-step" id="step3" data-step="3">
-        <span class="step-num">3</span>
-        <span class="step-label">What worked before → what to check</span>
-      </div>
-      <div class="step-divider" aria-hidden="true"></div>
-      <div class="progress-step" id="step4" data-step="4">
-        <span class="step-num">4</span>
-        <span class="step-label">Save verified solution</span>
-      </div>
-    </nav>
+    <main class="workspace">
+      <div class="col-main">
+        <section class="hero">
+          <h1 class="hero-title">AI that remembers how your team solved problems before.</h1>
+          <p class="hero-sub">Describe what's happening. MemoryOps recalls similar incidents your team resolved, shows what worked and what didn't, and suggests what to check first. It learns only from outcomes a person confirms.</p>
+        </section>
 
-    <!-- Main Content Sections -->
-    <div class="layout-stack">
-      <!-- Section 1: What's happening now? + Memory Value -->
-      <section class="grid-2-col" aria-labelledby="section-current-problem">
-        <!-- Problem Input Card -->
-        <article class="panel card-input">
-          <div class="panel-header">
+        <nav class="steps" aria-label="Progress">
+          <div class="progress-step active" id="step1"><span class="step-num">1</span><span class="step-label">Describe</span></div>
+          <div class="progress-step" id="step2"><span class="step-num">2</span><span class="step-label">Recall</span></div>
+          <div class="progress-step" id="step3"><span class="step-num">3</span><span class="step-label">Check</span></div>
+          <div class="progress-step" id="step4"><span class="step-num">4</span><span class="step-label">Learn</span></div>
+        </nav>
+
+        <section class="composer" aria-labelledby="composerLabel">
+          <label id="composerLabel" for="incident" class="composer-label">What is happening?</label>
+          <textarea id="incident" rows="4" spellcheck="false" placeholder="Describe the symptoms, when it started, and what changed recently…"></textarea>
+          <div id="incidentError" class="field-error" role="alert" hidden></div>
+          <div class="composer-foot">
+            <div class="scenarios" role="group" aria-label="Demo scenarios">
+              <span class="scenarios-label">Try</span>
+              <button class="chip" type="button" data-preset="round1" title="Checkout breaks after an update">Round 1</button>
+              <button class="chip" type="button" data-preset="round2" title="Same kind of problem, worded differently">Round 2 · reworded</button>
+              <button class="chip" type="button" data-preset="round3" title="A third connection-limit incident">Round 3</button>
+              <button class="chip" type="button" data-preset="round4" title="Similar symptoms, different root cause">Round 4 · different cause</button>
+              <button class="chip" type="button" data-preset="unrelated" title="A problem unrelated to checkout">Unrelated</button>
+            </div>
+            <div class="composer-actions">
+              <button id="seed" class="btn btn-quiet" type="button" title="Stores 3 sample resolved incidents in Hindsight. Loading again replaces them; it never duplicates.">Load sample history</button>
+              <button id="analyze" class="btn btn-primary" type="button"><span>Analyze with MemoryOps</span><kbd>Ctrl ↵</kbd></button>
+            </div>
+          </div>
+        </section>
+
+        <section id="analysisLoading" class="stages" hidden aria-live="polite" aria-label="Analysis progress">
+          <ol>
+            <li data-stage="0">Searching team memory…</li>
+            <li data-stage="1">Comparing previous incidents…</li>
+            <li data-stage="2">Reviewing what worked and what failed…</li>
+            <li data-stage="3">Building recommendation…</li>
+          </ol>
+        </section>
+
+        <section id="analysisEmpty" class="intro-help" aria-label="How it works">
+          <div class="help-item"><span class="help-k">Recall</span><p>Hindsight finds past incidents your team resolved that resemble today's problem.</p></div>
+          <div class="help-item"><span class="help-k">Check</span><p>You see what caused them, what worked, what failed, and the next best check.</p></div>
+          <div class="help-item"><span class="help-k">Learn</span><p>When you confirm what fixed it, that verified experience helps next time.</p></div>
+        </section>
+
+        <section id="results" class="results" hidden aria-live="polite" aria-label="Analysis">
+          <div id="recommendationContent"></div>
+        </section>
+
+        <section id="learnSection" class="learn" hidden aria-labelledby="learnTitle">
+          <div class="section-head">
+            <h2 id="learnTitle" class="section-title">Resolve and teach MemoryOps</h2>
+            <p class="section-sub">After a person has fixed it, record what really happened, including what didn't work. Only confirmed outcomes become memory.</p>
+          </div>
+          <div class="learn-grid">
+            <div class="field span-2">
+              <label for="resolution" class="field-label-ui">What actually fixed it <span class="req">required</span></label>
+              <input id="resolution" type="text" spellcheck="false" placeholder="The action that really resolved it" />
+            </div>
+            <div class="field">
+              <label for="area" class="field-label-ui">Affected area</label>
+              <input id="area" type="text" spellcheck="false" placeholder="e.g. Checkout" />
+            </div>
+            <div class="field">
+              <label for="cause" class="field-label-ui">What caused it</label>
+              <input id="cause" type="text" spellcheck="false" placeholder="Root cause, if known" />
+              <label class="check-inline"><input id="causeConfirmed" type="checkbox" /> Cause is confirmed, not a guess</label>
+            </div>
+            <div class="field">
+              <label for="attempted" class="field-label-ui">Tried, but did not fix it</label>
+              <input id="attempted" type="text" spellcheck="false" placeholder="Actions that didn't work" />
+            </div>
+            <div class="field">
+              <label for="outcome" class="field-label-ui">Final outcome</label>
+              <input id="outcome" type="text" spellcheck="false" placeholder="How things looked afterwards" />
+            </div>
+            <div class="field span-3">
+              <label for="lesson" class="field-label-ui">Lesson for next time</label>
+              <input id="lesson" type="text" spellcheck="false" placeholder="What should the team check first next time?" />
+            </div>
+          </div>
+          <div id="sessionObservations" class="session-obs"></div>
+          <div class="learn-foot">
+            <label class="check-inline confirm-check"><input id="humanConfirmed" type="checkbox" /> <span><strong>I confirm this is what actually happened.</strong> AI suggestions are never saved as fact.</span></label>
+            <button id="resolve" class="btn btn-accent" type="button">Save verified experience</button>
+          </div>
+          <div id="resolutionError" class="field-error" role="alert" hidden></div>
+          <div id="saveSuccessBox" class="success" hidden role="status">
+            <svg class="success-check" width="28" height="28" viewBox="0 0 28 28" aria-hidden="true"><circle cx="14" cy="14" r="12.5" /><path d="M8.5 14.5 L12.3 18.2 L19.5 10.5" /></svg>
             <div>
-              <div class="panel-kicker">STEP 1 • CURRENT PROBLEM</div>
-              <h2 id="section-current-problem" class="panel-title">What's happening now?</h2>
-              <p class="panel-subtitle">Describe the issue your team is facing.</p>
-            </div>
-            <div class="demo-presets" role="group" aria-label="Demo problems">
-              <span class="preset-label">Demo problems</span>
-              <button class="preset-btn" type="button" data-preset="round1" title="Checkout breaks after an update">Round 1</button>
-              <button class="preset-btn" type="button" data-preset="round2" title="Same kind of problem, worded differently">Round 2 · reworded</button>
-              <button class="preset-btn" type="button" data-preset="round3" title="A third connection-limit incident, worded differently">Round 3</button>
-              <button class="preset-btn" type="button" data-preset="round4" title="Similar symptoms, different root cause">Round 4 · different cause</button>
-              <button class="preset-btn" type="button" data-preset="unrelated" title="A problem unrelated to checkout">Unrelated</button>
+              <div class="success-title">Experience learned</div>
+              <div class="success-msg">Future similar incidents can use this verified resolution.</div>
+              <div class="success-preview" id="savedResolutionPreview"></div>
             </div>
           </div>
-
-          <div class="input-container">
-            <label for="incident" class="visually-hidden">Current incident description</label>
-            <textarea id="incident" rows="4" spellcheck="false" placeholder="Describe what symptoms, errors, or service issues you are seeing…">Customers are unable to place orders after today's checkout update. Some checkout requests are failing, and the database appears overloaded. The problem started immediately after the latest update.</textarea>
-            <div id="incidentError" class="field-error" role="alert" style="display: none;"></div>
-          </div>
-
-          <div class="action-bar">
-            <button id="analyze" class="btn btn-primary" type="button">
-              <svg class="btn-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
-              <span>Analyze problem</span>
-            </button>
-            <button id="seed" class="btn btn-secondary" type="button">
-              <svg class="btn-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1-2.5-2.5Z"/><path d="M6 6h10"/><path d="M6 10h10"/></svg>
-              <span>Load past solved incidents</span>
-            </button>
-          </div>
-          <p class="action-helper-text">
-            Demo setup: stores 3 sample solved problems in Hindsight. Loading again replaces them — it never creates duplicates.
-          </p>
-        </article>
-
-        <!-- Memory State & Visual Comparison Card -->
-        <article class="panel card-memory-state">
-          <div class="panel-header">
-            <div>
-              <div class="panel-kicker">HINDSIGHT MEMORY STATE</div>
-              <h2 class="panel-title">Team Knowledge Bank</h2>
-            </div>
-            <div id="memoryBadge" class="badge badge-neutral">Checking…</div>
-          </div>
-
-          <!-- Dynamic Memory State Notification Card -->
-          <div id="memoryStateBanner" class="memory-state-box state-empty">
-            <div class="state-icon" id="stateIcon" aria-hidden="true">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
-            </div>
-            <div class="state-content">
-              <div class="state-headline" id="stateHeadline">Ready</div>
-              <p class="state-description" id="stateDescription">Checking what Hindsight remembers…</p>
-            </div>
-          </div>
-
-          <!-- Compact Pipeline Visualization -->
-          <div class="pipeline-card" aria-label="How MemoryOps learns">
-            <div class="pipeline-title">HOW MEMORYOPS LEARNS</div>
-            <div class="pipeline-track">
-              <div class="pipeline-node" id="learnProblem"><span class="node-dot"></span><span class="node-text">1 Problem occurs</span></div>
-              <span class="pipeline-arrow" aria-hidden="true">→</span>
-              <div class="pipeline-node" id="learnRecalled"><span class="node-dot"></span><span class="node-text">2 Experience recalled</span></div>
-              <span class="pipeline-arrow" aria-hidden="true">→</span>
-              <div class="pipeline-node" id="learnVerify"><span class="node-dot"></span><span class="node-text">3 Engineer verifies</span></div>
-              <span class="pipeline-arrow" aria-hidden="true">→</span>
-              <div class="pipeline-node" id="learnSaved"><span class="node-dot"></span><span class="node-text">4 Solution saved</span></div>
-              <span class="pipeline-arrow" aria-hidden="true">→</span>
-              <div class="pipeline-node" id="learnFuture"><span class="node-dot"></span><span class="node-text">5 Next time starts with it</span></div>
-            </div>
-            <p class="loop-note">Memory recommends → a person verifies, acts, and confirms the outcome → memory learns. MemoryOps never changes your systems.</p>
-          </div>
-
-          <div class="learning-log">
-            <div class="pipeline-title">LEARNING PROGRESS · THIS SESSION</div>
-            <ol id="learningLog" class="log-list">
-              <li class="log-empty">Nothing yet. Each analysis and each saved experience is logged here with what Hindsight actually returned.</li>
-            </ol>
-            <p class="log-foot">MemoryOps becomes more useful as verified incident experience accumulates.</p>
-          </div>
-        </article>
-      </section>
-
-      <!-- Section 2: Two-Column Results Layout -->
-      <section class="grid-2-col" aria-label="Analysis and historical evidence results">
-        <!-- LEFT: Similar problem from the past -->
-        <article class="panel card-result" id="memoryPanel">
-          <div class="panel-header">
-            <div>
-              <div class="panel-kicker">STEP 2 • WHAT WORKED BEFORE</div>
-              <h2 class="panel-title">Similar problem from the past</h2>
-            </div>
-            <span id="recallBadge" class="badge badge-subtle">Not searched yet</span>
-          </div>
-
-          <!-- Recalled Memory Content Container -->
-          <div id="memoriesList" class="memories-container" aria-live="polite">
-            <!-- Thoughtful empty state -->
-            <div class="panel-empty-state" id="memoriesEmpty">
-              <svg class="empty-icon" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/></svg>
-              <h3>No search yet.</h3>
-              <p>Click <strong>Analyze problem</strong>. Anything Hindsight recalls from past solved problems appears here.</p>
-            </div>
-          </div>
-        </article>
-        <!-- RIGHT: What MemoryOps recommends -->
-        <article class="panel card-result" id="recommendationPanel">
-          <div class="panel-header">
-            <div>
-              <div class="panel-kicker">STEP 3 • WHAT TO CHECK TODAY</div>
-              <h2 class="panel-title">What I would check first</h2>
-            </div>
-            <div id="recommendationContextBadge" class="badge badge-subtle">Awaiting analysis</div>
-          </div>
-
-          <!-- Loading state placeholder -->
-          <div id="analysisLoading" class="loading-state" style="display: none;" aria-live="polite">
-            <div class="spinner"></div>
-            <div class="loading-text" id="loadingStage">Searching your team's past solved problems…</div>
-            <div class="loading-sub">Hindsight recall finds similar solved problems, then reflect reasons over them. This can take several seconds.</div>
-          </div>
-
-          <!-- Initial empty prompt state -->
-          <div id="analysisEmpty" class="panel-empty-state">
-            <svg class="empty-icon" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
-            <h3>Ready to analyze</h3>
-            <p>Click <strong>Analyze problem</strong> above to see recommendations based on team memory.</p>
-          </div>
-
-          <!-- Structured Recommendation Content Container -->
-          <div id="recommendationContent" class="recommendation-body" style="display: none;" aria-live="polite">
-            <!-- Dynamically populated structured cards -->
-          </div>
-        </article>
-      </section>
-
-      <!-- Section 3: Save what worked (Close the Loop) -->
-      <section class="panel card-save" aria-labelledby="save-section-title">
-        <div class="save-header">
-          <div>
-            <div class="panel-kicker">STEP 4 • CLOSE THE LOOP</div>
-            <h2 id="save-section-title" class="panel-title">Save what worked</h2>
-            <p class="panel-subtitle">After a person has fixed the problem, record what really happened — including what didn't work — so the next similar problem starts with this experience.</p>
-          </div>
-          <span class="badge badge-memory">Continuous Learning</span>
-        </div>
-
-        <div class="learn-grid">
-          <div class="save-input-group span-2">
-            <label for="resolution" class="input-label">What actually fixed the problem? <span class="req">required</span></label>
-            <input id="resolution" type="text" spellcheck="false" placeholder="The action that really resolved it" />
-          </div>
-          <div class="save-input-group">
-            <label for="area" class="input-label">Affected area <span class="opt">optional</span></label>
-            <input id="area" type="text" spellcheck="false" placeholder="e.g. Checkout" />
-          </div>
-          <div class="save-input-group">
-            <label for="cause" class="input-label">What caused it? <span class="opt">optional</span></label>
-            <input id="cause" type="text" spellcheck="false" placeholder="Root cause, if known" />
-            <label class="check-inline"><input id="causeConfirmed" type="checkbox" /> Cause is confirmed, not a guess</label>
-          </div>
-          <div class="save-input-group">
-            <label for="attempted" class="input-label">Tried, but did NOT fix it <span class="opt">optional</span></label>
-            <input id="attempted" type="text" spellcheck="false" placeholder="Actions that didn't work" />
-          </div>
-          <div class="save-input-group">
-            <label for="outcome" class="input-label">Final outcome <span class="opt">optional</span></label>
-            <input id="outcome" type="text" spellcheck="false" placeholder="What the system looked like afterwards" />
-          </div>
-          <div class="save-input-group span-3">
-            <label for="lesson" class="input-label">Lesson for next time <span class="opt">optional</span></label>
-            <input id="lesson" type="text" spellcheck="false" placeholder="What should the team check first next time?" />
-          </div>
-        </div>
-        <div class="save-confirm-row">
-          <label class="check-inline confirm-check"><input id="humanConfirmed" type="checkbox" /> <span><strong>I confirm this is what actually happened.</strong> Only human-confirmed outcomes become experience — AI recommendations are never saved as fact.</span></label>
-          <button id="resolve" class="btn btn-save" type="button">
-            <svg class="btn-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
-            <span>Save verified experience</span>
-          </button>
-        </div>
-        <div id="sessionObservations" class="session-obs"></div>
-        <div id="resolutionError" class="field-error" role="alert" style="display: none;"></div>
-
-        <!-- Strong Success Confirmation Box -->
-        <div id="saveSuccessBox" class="save-success-box" style="display: none;" role="status">
-          <div class="success-icon-wrap" aria-hidden="true">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-          </div>
-          <div class="success-content">
-            <div class="success-title">✓ Experience learned · saved to Hindsight</div>
-            <div class="success-msg">MemoryOps can use this verified solution when a similar problem happens again.</div>
-            <div class="success-preview" id="savedResolutionPreview"></div>
-          </div>
-        </div>
-      </section>
-    </div>
-
-    <!-- Technical Error Details Modal/Drawer (Graceful Expandable) -->
-    <div id="errorBanner" class="error-banner" style="display: none;" role="alert">
-      <div class="error-banner-content">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-        <span id="errorMessage">Memory service is temporarily unavailable.</span>
+        </section>
       </div>
+
+      <aside class="col-rail" aria-label="Team memory">
+        <section class="rail-block">
+          <h2 class="rail-title">Team memory</h2>
+          <dl class="stats" id="teamStats">
+            <div><dt>Historical incidents</dt><dd id="statHistorical">—</dd></div>
+            <div><dt>Learned by this team</dt><dd id="statLearned">—</dd></div>
+            <div><dt>Team patterns</dt><dd id="statPatterns">—</dd></div>
+            <div><dt>Relevant to this problem</dt><dd id="statRelevant">—</dd></div>
+          </dl>
+        </section>
+
+        <section class="rail-block state" id="memoryStateBanner">
+          <div class="state-headline" id="stateHeadline">Ready</div>
+          <p class="state-description" id="stateDescription">Checking what Hindsight remembers…</p>
+        </section>
+
+        <section class="rail-block">
+          <h2 class="rail-title">How MemoryOps learns</h2>
+          <ol class="loop">
+            <li class="loop-node" id="learnProblem">Recall</li>
+            <li class="loop-node" id="learnRecalled">Verify</li>
+            <li class="loop-node" id="learnVerify">Resolve</li>
+            <li class="loop-node" id="learnSaved">Learn</li>
+            <li class="loop-node" id="learnFuture">Better next time</li>
+          </ol>
+          <p class="rail-note">Memory suggests. A person verifies, acts and confirms. MemoryOps never changes your systems.</p>
+        </section>
+
+        <section class="rail-block">
+          <h2 class="rail-title">This session</h2>
+          <ol id="learningLog" class="log"><li class="log-empty">Each analysis and saved experience appears here, with what Hindsight actually returned.</li></ol>
+        </section>
+
+        <p class="rail-foot">Retain · Recall · Reflect, powered by Hindsight</p>
+      </aside>
+    </main>
+
+    <div id="errorBanner" class="error-banner" hidden role="alert">
+      <span id="errorMessage">Memory service is temporarily unavailable.</span>
       <button id="errorToggleDetails" class="btn-link" type="button">Details</button>
-      <pre id="errorDetails" class="error-details-pre" style="display: none;"></pre>
+      <pre id="errorDetails" class="error-details" hidden></pre>
     </div>
-
-    <!-- Footer -->
-    <footer class="app-footer">
-      <div class="footer-left">
-        <span class="loop-badge">Retain</span>
-        <span class="loop-arrow" aria-hidden="true">→</span>
-        <span class="loop-badge">Recall</span>
-        <span class="loop-arrow" aria-hidden="true">→</span>
-        <span class="loop-badge">Reflect</span>
-        <span class="loop-arrow" aria-hidden="true">→</span>
-        <span class="loop-badge">Learn</span>
-      </div>
-      <div class="footer-right">
-        <span>MemoryOps Enterprise Incident Copilot</span>
-        <span>•</span>
-        <span>Microsoft Hackathon Demo</span>
-      </div>
-    </footer>
-
-    <!-- Floating Toast Notification -->
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
   </div>
 

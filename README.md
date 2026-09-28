@@ -105,7 +105,7 @@ npm run memory:seed -- --bank memoryops-training-v1 --dry-run  # validate + prin
 - **A bank must be named explicitly,** so development runs never write to your demo bank by accident. Suggested banks: `memoryops-training-v1`, `memoryops-evaluation-v1`, `memoryops-final-demo`.
 - **Duplicate-safe:** each incident's `document_id` is `memoryops-INC-xxxx`. Hindsight upserts on `document_id` by deleting the old version and re-processing. Before sending anything, the script calls `GET /documents/{id}` and skips incidents whose stored `original_text` is unchanged. A second run therefore reports `50 unchanged` and sends nothing.
 - **Batching and errors:** synchronous retains in batches of 5 (`--batch-size`). 429, 5xx, timeout, and network errors are retried up to 3 times with exponential backoff; Hindsight documents no rate limits, so this is deliberately conservative. On 401/403 the script stops immediately. The API key is never printed.
-- **Shared with the app:** the *Load past solved incidents* button stores 3 records from this same dataset with the same document IDs, so the button and the script never duplicate each other.
+- **Shared with the app:** the *Load sample history* button stores 3 records from this same dataset with the same document IDs, so the button and the script never duplicate each other.
 
 ### Evaluation (held out)
 
@@ -125,7 +125,7 @@ The dataset gives the bank its **initial experience**. From then on, each human-
 
 ## Clean memory bank (for the "before" state)
 
-**Reset screen** clears only the browser view. It does **not** delete anything in Hindsight. For a truly empty "before" state, use a bank ID you have never used:
+**Reset** clears only the browser view. It does **not** delete anything in Hindsight. For a truly empty "before" state, use a bank ID you have never used:
 
 ```env
 HINDSIGHT_BANK_ID=memoryops-final-demo-0928
@@ -165,16 +165,16 @@ npm run memory:consolidate -- --bank <bank>              # show / update team pa
 
 The **Demo problems** buttons fill in both the problem and the outcome a person would confirm. The observation field suggests what a person would report.
 
-1. **Round 1: no history.** Click **Analyze problem**. Confidence is **INSUFFICIENT** and you get general troubleshooting. Record the observation *"Current pool is 5. Previous version was 30."*, tick **I confirm…**, then click **Save verified experience** to see **✓ Experience learned**.
+1. **Round 1: no history.** Click **Analyze with MemoryOps**. Confidence is **INSUFFICIENT** and you get general troubleshooting. Record the observation *"Current pool is 5. Previous version was 30."*, tick **I confirm…**, then click **Save verified experience** to see **✓ Experience learned**.
 2. **Round 2: reworded.** Hindsight recalls Round 1 (*Learned from a previous resolved incident*). You see what worked, *Previously tried, did NOT work* (restart only), *Why this recommendation?* and the **Next best check**. Record the observation, and the hypothesis becomes *supported*. Confirm and save.
 3. **Round 3: another confirmed incident.** Analyze, then confirm and save. That makes 3 confirmed connection-limit incidents, so the log shows **Team has learned**, and a **Team playbook** is created.
 4. **Round 4: same symptoms, different cause.** Today's text says the database looks healthy, so the remembered cause is *weakened* and confidence drops. The team pattern is shown, but it doesn't override the evidence. Record *"Connection pool is 30 as usual. Logs show the tax service certificate has expired."*: the next best check then says to investigate beyond memory. Confirm the certificate cause. The pattern updates to name the exception, and analyzing again shows **Conflicting history**.
-5. **Unrelated.** Click **Unrelated**, then **Analyze problem**. MemoryOps abstains.
+5. **Unrelated.** Click **Unrelated**, then **Analyze with MemoryOps**. MemoryOps abstains.
 
-*Load past solved incidents* is optional: it adds 3 incidents from the dataset.
+*Load sample history* is optional: it adds 3 incidents from the dataset.
 
 **Bootstrap variant** (shows bootstrap learning and continuous learning together): `npm run memory:seed -- --bank memoryops-final-demo`, set `HINDSIGHT_BANK_ID=memoryops-final-demo`, then `npm start`. The badge reads *50 historical incidents · 0 learned*.
-1. Click **Round 2 · reworded**, then **Analyze problem**. Hindsight recalls a dataset incident (INC-1042 in the intended case) with its cause, what worked, and what did not.
+1. Click **Round 2 · reworded**, then **Analyze with MemoryOps**. Hindsight recalls a dataset incident (INC-1042 in the intended case) with its cause, what worked, and what did not.
 2. Confirm and save today's fix. The badge becomes *1 learned*.
 3. Analyze a similar reworded problem. The newly learned `MO-…` resolution is recalled alongside the dataset.
 
