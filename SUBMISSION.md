@@ -1,57 +1,45 @@
-# Submission copy — MemoryOps
+# MemoryOps — Submission
 
-## Project name
-
-**MemoryOps**
-
-## One-line pitch
-
-An incident-response copilot that remembers how previous outages were actually resolved and uses that history to make the next response faster and more specific.
+**One-line pitch:** AI that remembers how your team solved problems before.
 
 ## Problem
-
-Teams repeatedly debug similar production failures, but the useful context is fragmented across incident tickets, chat, runbooks, and postmortems. A normal AI assistant starts each incident almost from zero.
+Teams keep solving the same kinds of technical problems. What they learned (the cause, the fix, the lesson) gets scattered across tickets, chats, and people's memories, so each new problem starts almost from zero. A regular AI assistant has the same gap: it has no memory of your team's past.
 
 ## Solution
+MemoryOps stores solved problems in Hindsight long-term memory. When a new problem arrives, it recalls the most similar solved problem and shows what happened, what caused it, and what worked. It then turns that into specific checks for today. Once the problem is fixed, today's solution is saved back to memory.
 
-MemoryOps stores the facts, root causes, resolutions, and lessons from resolved incidents in Hindsight. When a new incident arrives, it recalls the most relevant prior incident history and uses that evidence to generate the first checks an engineer should perform. The final resolution is retained again, closing the learning loop.
+## Why Hindsight matters
+Without memory, MemoryOps can only offer general troubleshooting. With Hindsight, the **same** problem description brings back a real past incident and a recommendation grounded in it. The demo shows this before/after difference directly.
 
-## Why Hindsight is central
-
-Without Hindsight, MemoryOps produces generic troubleshooting suggestions.
-
-With Hindsight, the same incident can retrieve a concrete previous failure pattern, the root cause that was confirmed, and the resolution that worked. The application visibly improves as more incidents are retained.
-
-## Demo scenario
-
-A new checkout-api deployment begins returning intermittent 502 errors with database acquire timeouts.
-
-- Before memory: generic production triage.
-- After memory: Hindsight recalls a previous checkout incident caused by the DB connection pool being reduced from 30 to 5.
-- MemoryOps recommends checking the pool configuration and saturation first, while telling the engineer to verify current evidence before making a change.
-- After resolution, the new outcome is retained for future incidents.
+## How Hindsight is used
+- **Retain:** stores sample solved problems and today's resolution, each with a stable `document_id`, so loading the samples again doesn't create duplicates.
+- **Recall:** finds similar past problems. Results are grouped by source document, and the original text comes from the returned chunks.
+- **Reflect:** reasons over the recalled memory and returns structured output (pattern, three checks, why, safety note).
 
 ## Architecture
+Browser (vanilla HTML/CSS/JS) → MemoryOps Node API (`server.mjs`, zero dependencies) → Hindsight Cloud (retain / recall / reflect)
 
-Browser UI → Node.js API → Hindsight Cloud
+## Demo story
+1. Before memory: today's checkout problem gets no match, so the answer is general troubleshooting.
+2. Load 3 past solved problems into Hindsight.
+3. After memory: Hindsight recalls INC-1042, where checkout broke after an update because the database connection limit had dropped from 30 to 5. MemoryOps recommends comparing the connection settings, checking saturation, and verifying whether the update changed them.
+4. Save today's fix. It becomes experience the next person can use.
 
-Hindsight operations:
+## Technical highlights
+- Structured reflect output, with a fallback to plain text if the schema is rejected.
+- Memory is only attributed when the incident was actually recalled. No fabricated matches, scores, or counts.
+- Timeouts on every Hindsight call, clear error mapping (401/404/429/5xx/timeout/malformed), and protection against concurrent seeding.
+- The API key stays server-side and is redacted from any error text.
+- 16 automated tests against a fake Hindsight server (`npm test`).
 
-- `retain`: store resolved incidents and outcomes
-- `recall`: retrieve related prior incidents
-- `reflect`: synthesize a concise incident response using the memory bank
+## Real-world value
+Getting to a useful first step faster on repeat problems, and keeping team knowledge when people move on. These are the intended benefits. We have **not** measured them.
 
-## Safety / reliability behavior
+## Safety
+Past incidents are shown as evidence, not certainty. Every recommendation tells the team to verify today's system before applying a previous fix. MemoryOps never changes any system.
 
-Past incidents are treated as evidence, not certainty. The assistant asks the operator to verify current metrics/configuration before applying a past fix.
+## Known limitations
+The sample history is demo data, and reflect wording varies between runs. There is one shared bank with no authentication. Memories can't be deleted from the UI (use a fresh bank ID instead). Retain is synchronous, so it can take a few seconds.
 
-## Future Microsoft integration
-
-The MVP can be extended with:
-
-- Microsoft Teams bot notifications and incident conversations
-- Azure Monitor / Application Insights ingestion
-- Azure DevOps deployment metadata
-- Entra ID authentication
-
-These are extensions; the demo stays intentionally focused on the memory loop.
+## Future Microsoft integration (not implemented)
+Microsoft Teams (report and resolve from chat), Azure Monitor / Application Insights (problems from real alerts), Azure DevOps (deployment history as evidence), Microsoft Entra ID (sign-in and a memory bank for each team).

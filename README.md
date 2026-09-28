@@ -1,179 +1,87 @@
-# MemoryOps — Hindsight-powered incident response demo
+# MemoryOps
 
-MemoryOps is a compact hackathon demo that makes **persistent agent memory the visible product behavior**.
+**AI that remembers how your team solved problems before.**
 
-The story is simple:
+When something breaks today, MemoryOps searches the problems your team has already solved. If it finds a similar one, it shows what happened, what caused it, what fixed it, and what to check today. When today's problem is fixed, MemoryOps saves the solution so it can help next time.
 
-1. A new production incident arrives.
-2. With no history, the agent can only give generic triage.
-3. You seed a few previously resolved incidents into **Hindsight**.
-4. The same incident is analyzed again.
-5. Hindsight recalls the closest past incident and `reflect` turns that evidence into specific first checks.
-6. When the current incident is resolved, the resolution is retained so the agent gets better next time.
+## Why memory matters
 
-## Why this is a strong demo
+Teams keep solving the same kinds of problems, but the useful knowledge ends up scattered across tickets, chats, and people's heads. A normal AI assistant starts from zero every time. MemoryOps starts from your team's experience. The demo shows this directly: the **same** problem gets a generic answer before memory is loaded and a specific answer after.
 
-The “before vs after memory” difference is visible in under a minute. The agent is not just a chatbot with a memory feature bolted on; the usefulness of its recommendation depends on historical incident memory.
+## Where Hindsight is used
 
-## Tech
+All memory lives in [Hindsight](https://hindsight.vectorize.io). MemoryOps does not keep a memory store of its own.
 
-- Node.js 18+ (no npm dependencies)
-- Vanilla HTML/CSS/JS
-- Hindsight Cloud REST API
-- Hindsight `retain`, `recall`, and `reflect`
+| Step | Hindsight API | What MemoryOps does |
+|---|---|---|
+| **Retain** | `POST /v1/default/banks/{bank}/memories` | Stores the sample solved problems, and later today's solution. Each one gets a stable `document_id`, so loading the samples again replaces them instead of creating duplicates. |
+| **Recall** | `POST /v1/default/banks/{bank}/memories/recall` | Searches memory for today's problem. The recalled facts are grouped by the document they came from, and the original text is read from the returned chunks to build the incident card. |
+| **Reflect** | `POST /v1/default/banks/{bank}/reflect` | Reasons over the recalled memory using a JSON `response_schema` and returns a likely pattern, three checks, why, and a safety note. If the schema is rejected, it retries once as plain text. |
 
-## Run locally
+Truthfulness rules the code enforces:
+- If recall returns nothing, reflect is **not** called. The UI says "No similar solved problem was found" and shows general troubleshooting labelled as such.
+- A recommendation is labelled "Memory used" only when reflect names an incident that recall **actually returned**.
+- If recall succeeds but reflect fails, the UI still shows the recalled memory and reports the reflect error.
+- Connection status comes from a real `GET /stats` call, and the memory count is Hindsight's `total_documents`.
+
+## Architecture
+
+```
+Browser (public/: HTML/CSS/JS, no build step)
+   ↓  /api/status  /api/seed  /api/analyze  /api/resolve
+MemoryOps Node API (server.mjs, no dependencies, API key stays server-side)
+   ↓  Bearer auth, timeouts, error mapping
+Hindsight Cloud
+   ↓
+Retain / Recall / Reflect
+```
+
+## Run it
+
+Requires Node.js 18 or newer.
 
 ```bash
-cp .env.example .env
-# edit .env and add HINDSIGHT_API_KEY
-npm start
+cp .env.example .env        # then set HINDSIGHT_API_KEY and a fresh HINDSIGHT_BANK_ID
+npm start                   # http://localhost:3000
 ```
 
-Open:
+On Windows PowerShell, run `Copy-Item .env.example .env` and then `notepad .env`.
 
-```text
-http://localhost:3000
+## Test it
+
+```bash
+npm test
 ```
 
-Windows PowerShell:
+There are 16 tests using `node:test`. They run against a **fake Hindsight HTTP server** and never touch your real account. They cover status, validation, invalid JSON, the empty-memory path, recall attribution, rejecting a reflect answer that names an incident recall never returned, seeding without duplicates and blocking concurrent seeds, saving a resolution, 401/429/500 errors, timeouts, malformed responses, and checking that the API key never reaches the browser.
 
-```powershell
-Copy-Item .env.example .env
-notepad .env
-npm start
-```
+## Clean memory bank (for the "before" state)
 
-## Get a Hindsight key
-
-Create a Hindsight Cloud account, create/copy an API key, and put it in `.env`.
-
-Recommended `.env`:
+**Reset screen** clears only the browser view. It does **not** delete anything in Hindsight. For a truly empty "before" state, use a bank ID you have never used:
 
 ```env
-HINDSIGHT_API_KEY=hsk_your_key
-HINDSIGHT_BANK_ID=memoryops-demo-yourname
-HINDSIGHT_BASE_URL=https://api.hindsight.vectorize.io
-PORT=3000
-MOCK_MODE=0
+HINDSIGHT_BANK_ID=memoryops-final-demo-0928
 ```
 
-Use a fresh `HINDSIGHT_BANK_ID` when you want a clean “before memory” state.
+Restart `npm start`. The header should show **Hindsight connected ✓**, and the Knowledge Bank should show **Memory is empty**. A bank that doesn't exist yet counts as empty, and Hindsight creates it on the first retain.
 
-## Demo sequence
+## Exact demo (about 3 minutes)
 
-### 1. Show the “before” state
+1. **Before.** With a fresh bank, click **Analyze problem**. You get *No similar solved problem was found* and general troubleshooting.
+2. **Teach.** Click **Load past solved incidents**. Three solved problems are retained in Hindsight: checkout (similar), payments, and login (both different). This takes a few seconds because retain runs synchronously.
+3. **After.** Click **Analyze problem** again on the same text. Hindsight recalls **INC-1042**, and you see what happened, the cause, what worked, and the lesson. The recommendation is labelled **Memory used** and gives three specific checks and a safety note. The other recalled incidents are listed as "judged less similar".
+4. **Learn.** Click **Save solution to memory**. You see **Saved to Hindsight ✓**, and the memory count goes up by one. You can analyze again: today's saved solution can now be recalled too.
 
-Open the app and click **Analyze with memory** before seeding any incidents.
+## Limitations
 
-Expected story:
+- The sample history is deterministic demo data. Recall and reflect results come from Hindsight, so the exact wording (and occasionally the match judgement) varies from run to run.
+- A single shared memory bank. There is no login, no multi-tenancy, and no deletion of memories from the UI.
+- MemoryOps only suggests checks. It never changes any system.
+- Retain is synchronous, so loading samples or saving a solution can take several seconds.
 
-> “There is no useful incident history yet, so the system can only offer generic triage.”
+## Future work / potential integrations (not implemented)
 
-### 2. Teach the agent
-
-Click **Teach agent past incidents**.
-
-This calls Hindsight `retain` for three resolved incidents.
-
-### 3. Show the “after” state
-
-Click **Analyze with memory** again.
-
-The checkout incident should now retrieve the earlier checkout/DB-pool incident, and the response should become much more specific.
-
-### 4. Close the learning loop
-
-Click **Save resolution to Hindsight**.
-
-Explain:
-
-> “The next outage starts with the resolution we learned today instead of starting from zero.”
-
-## API routes in this demo
-
-- `GET /api/status`
-- `POST /api/seed`
-- `POST /api/analyze`
-- `POST /api/resolve`
-
-## Hindsight operations used
-
-### Retain
-
-```http
-POST /v1/default/banks/{bank_id}/memories
-Authorization: Bearer hsk_...
-Content-Type: application/json
-
-{
-  "items": [{
-    "content": "Resolved incident ...",
-    "context": "Resolved incident INC-1042"
-  }]
-}
-```
-
-### Recall
-
-```http
-POST /v1/default/banks/{bank_id}/memories/recall
-
-{
-  "query": "checkout-api 502 DB acquire timeout"
-}
-```
-
-### Reflect
-
-```http
-POST /v1/default/banks/{bank_id}/reflect
-
-{
-  "query": "Use remembered incidents as historical evidence and recommend the first checks..."
-}
-```
-
-## Local UI-only testing
-
-If you need to test the interface before obtaining a Hindsight key:
-
-```env
-MOCK_MODE=1
-```
-
-Do **not** use mock mode for the final recorded demo. The final demo should show real Hindsight calls.
-
-## Suggested 3-minute recording
-
-**0:00–0:25** — “Production teams keep solving the same classes of incidents, but the useful context is scattered across tickets and postmortems. MemoryOps turns resolved incidents into reusable operational memory.”
-
-**0:25–0:55** — Analyze the checkout incident with an empty bank. Point out the generic response.
-
-**0:55–1:20** — Click “Teach agent past incidents.” Explain that each resolution is retained in Hindsight as experience.
-
-**1:20–2:10** — Analyze again. Show the recalled checkout incident and the specific DB-pool checks.
-
-**2:10–2:35** — Save the current resolution. Explain the learning loop.
-
-**2:35–3:00** — Show the code briefly: retain → recall → reflect. Close with: “The agent is useful because it remembers what actually worked, not because it can generate more text.”
-
-## Production-style improvements if time remains
-
-- Separate memory bank per organization/team
-- Incident tags (service, severity, environment)
-- Microsoft Teams bot or webhook
-- Azure Monitor / Application Insights event ingestion
-- Evidence links back to the original incident or postmortem
-- Approval gate before executing any remediation
-- Metrics: time-to-first-useful-action and repeat-incident MTTR
-
-## Submission checklist
-
-- Clean public GitHub repository
-- Working live demo
-- 2–5 minute public YouTube demo
-- Clear explanation of Hindsight retain/recall/reflect
-- Article and social post completed according to the provided content guide
-- Screenshots of the UI and memory evidence
-- Never commit `.env` or the Hindsight API key
+- Microsoft Teams: raise problems and save resolutions from a Teams channel
+- Azure Monitor / Application Insights: fill in "what's happening" from real alerts
+- Azure DevOps: attach deployment and change history as evidence
+- Microsoft Entra ID: sign-in and a memory bank for each team
