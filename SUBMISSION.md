@@ -39,7 +39,7 @@ Browser (vanilla HTML/CSS/JS) → MemoryOps Node API (`server.mjs`, zero depende
 - Timeouts on every Hindsight call, clear error mapping (401/404/429/5xx/timeout/malformed), and protection against concurrent seeding.
 - The API key stays server-side and is redacted from any error text.
 - Guardrails against reinforcing its own mistakes: only confirmed outcomes are learned, confirmed and suspected causes are kept apart, attempts that worked are kept apart from ones that failed, and nothing is overwritten.
-- 44 automated tests against a fake Hindsight server (`npm test`), plus `npm run smoke`, which runs the 7 learning-loop acceptance checks against a real bank.
+- 48 automated tests against a fake Hindsight server (`npm test`), plus `npm run smoke`, which runs the 7 learning-loop acceptance checks against a real bank.
 
 ## Real-world value
 Getting to a useful first step faster on repeat problems, and keeping team knowledge when people move on. These are the intended benefits. We have **not** measured them. The UI shows only factual progress, such as "0 relevant memories recalled" followed by "1 relevant resolved incident recalled". Possible future metrics: verified resolutions stored, usefulness feedback, and time to resolve repeat incidents.

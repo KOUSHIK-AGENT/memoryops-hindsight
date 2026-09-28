@@ -1460,3 +1460,19 @@ body.intro-active .app-shell {
   .app-shell { transition: opacity 250ms linear; }
   body.intro-active .app-shell { transform: none; filter: none; animation: app-failsafe 1ms linear 4s forwards; }
 }
+
+/* ---- Suggested fix (config diff from a confirmed incident) ---- */
+.fix-block { border: 1px solid var(--border-medium); background: rgba(10, 16, 28, 0.85); }
+.fix-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.fix-block .rec-label { color: var(--memory-green); }
+.fix-title { margin-top: 2px; font-size: 14px; font-weight: 600; color: var(--text-primary); }
+.fix-code { margin: 12px 0 10px; border: 1px solid var(--border-subtle); border-radius: var(--radius-md); overflow: hidden; background: #060a12; }
+.fix-code-bar { display: flex; justify-content: space-between; gap: 8px; padding: 6px 12px; font-family: var(--font-mono); font-size: 10.5px; color: var(--text-dim); border-bottom: 1px solid var(--border-subtle); }
+.fix-code pre { margin: 0; padding: 10px 0; overflow-x: auto; }
+.fix-code code { display: block; font-family: var(--font-mono); font-size: 13px; line-height: 1.7; }
+.diff-line { display: block; padding: 0 14px; white-space: pre; }
+.diff-del { color: #fca5a5; background: rgba(244, 63, 94, 0.08); }
+.diff-add { color: #a7f3d0; background: rgba(16, 185, 129, 0.09); }
+.fix-note { color: var(--text-dim); }
+.fix-setaside { margin: 8px 0 0; font-size: 12px; color: #fcd34d; }
+.fix-block.is-set-aside .fix-code, .fix-block.is-set-aside .fix-title { opacity: 0.45; }

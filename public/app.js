@@ -507,12 +507,40 @@ function diagnosisHtml() {
     <p class="rec-caption">Observations are session evidence only. They are saved to memory only if you confirm the final outcome in Step 4.</p>`);
 }
 
+function fixHtml(fix) {
+  state.suggestedFix = fix || null;
+  if (!fix) return "";
+  const lines = fix.diff.split("\n").map((l) => `<span class="diff-line ${l.startsWith("+") ? "diff-add" : "diff-del"}">${esc(l)}</span>`).join("");
+  return `<div class="rec-block fix-block" id="fixBlock">
+    <div class="fix-head">
+      <div><div class="rec-label">${ICON.checks} Suggested fix</div><div class="fix-title">${esc(fix.title)}</div></div>
+      <button class="preset-btn" type="button" id="copyFix" aria-label="Copy suggested change">Copy</button>
+    </div>
+    <div class="fix-code"><div class="fix-code-bar"><span>config change</span><span>from ${esc(fix.source.incidentId)}${fix.source.learned ? " · learned" : ""} · confirmed fix</span></div><pre><code>${lines}</code></pre></div>
+    <p class="rec-caption">What worked in ${esc(fix.source.incidentId)}: ${esc(fix.source.worked)}</p>
+    ${fix.verify ? `<p class="rec-caption"><strong>Verify after the change:</strong> ${esc(fix.verify)}</p>` : ""}
+    <p class="rec-caption fix-note">${esc(fix.note)} Review before applying; MemoryOps never changes your systems.</p>
+    <p class="fix-setaside" hidden>Set aside: your observations do not support this cause, so this fix is not recommended.</p>
+  </div>`;
+}
+
+function updateFixForHypotheses() {
+  const blockEl = document.getElementById("fixBlock");
+  const fix = state.suggestedFix;
+  if (!blockEl || !fix?.hypothesisId) return;
+  const h = state.hypotheses.find((x) => x.id === fix.hypothesisId);
+  const setAside = Boolean(h && (h.status === "weakened" || h.status === "ruled out"));
+  blockEl.classList.toggle("is-set-aside", setAside);
+  blockEl.querySelector(".fix-setaside").hidden = !setAside;
+}
+
 function renderRecommendation(data, matched) {
   const container = $("recommendationContent");
   const badge = $("recommendationContextBadge");
   const rec = data.recommendation;
   const ev = data.evidence;
   state.nextBestCheck = ev?.nextBestCheck || null;
+  state.suggestedFix = null;
   const diag = ev ? `<div id="diagnosisBox">${diagnosisHtml()}</div>` : "";
   const team = teamHtml(data.team);
   let html = confidenceHtml(ev);
@@ -543,6 +571,7 @@ function renderRecommendation(data, matched) {
     if (rec.structured) {
       if (rec.pattern) html += block("rec-block-pattern", ICON.pattern, "Likely pattern", `<p class="rec-text">${esc(rec.pattern)}</p>`);
       if (rec.checks?.length) html += block("rec-block-checks", ICON.checks, "What I would check first", checksList(rec.checks));
+      html += fixHtml(data.suggestedFix);
       if (ev?.failedBefore?.length) html += block("rec-block-avoid", ICON.safety, "Previously tried, did NOT work", `<ul class="fact-list">${ev.failedBefore.map((f) => `<li>${esc(f.text)}</li>`).join("")}</ul>`);
       else if (rec.avoid) html += block("rec-block-avoid", ICON.safety, "Previously tried, did NOT work", `<p class="rec-text">${esc(rec.avoid)}</p>`);
       if (rec.conflict) html += block("rec-block-avoid", ICON.memory, "Conflicting past evidence", `<p class="rec-text">${esc(rec.conflict)} Neither is treated as certain.</p>`);
@@ -602,14 +631,25 @@ async function addObservation() {
     logLearning("Observation recorded (session evidence only)");
   }
   $("diagnosisBox").innerHTML = diagnosisHtml();
+  updateFixForHypotheses();
 }
 
 // ============================================================
 // SAVE WHAT WORKED
 // ============================================================
 
-$("recommendationContent").addEventListener("click", (e) => {
+$("recommendationContent").addEventListener("click", async (e) => {
   if (e.target.closest("#addObservation")) addObservation();
+  const copy = e.target.closest("#copyFix");
+  if (copy && state.suggestedFix) {
+    try {
+      await navigator.clipboard.writeText(state.suggestedFix.diff);
+      copy.textContent = "Copied";
+    } catch {
+      copy.textContent = "Select & copy";
+    }
+    setTimeout(() => { copy.textContent = "Copy"; }, 1600);
+  }
 });
 $("recommendationContent").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && e.target.id === "observationInput") addObservation();
@@ -746,8 +786,8 @@ function runIntro(ready) {
   const shell = $("appShell");
   if (!intro) return;
   const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-  const MIN_MS = reduce ? 500 : 1700;
-  const MAX_MS = 2600;
+  const MIN_MS = reduce ? 500 : 1500;
+  const MAX_MS = 2200;
   const started = performance.now();
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   shell.inert = true; // no keyboard focus behind the overlay
