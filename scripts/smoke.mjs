@@ -19,7 +19,13 @@ async function call(path, body) {
 }
 const docs = async () => (await call("/api/status")).json.documents;
 
-const status = (await call("/api/status")).json;
+let status;
+try {
+  status = (await call("/api/status")).json;
+} catch {
+  console.error(`Cannot reach MemoryOps at ${BASE}. Start it first with \`npm start\` in another terminal (or set MEMORYOPS_URL).`);
+  process.exit(1);
+}
 if (!status.connected) {
   console.error(`Hindsight not connected: ${status.error || "unknown error"}`);
   process.exit(1);
